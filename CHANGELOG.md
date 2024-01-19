@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.20.3](https://github.com/ffplayout/ffplayout/releases/tag/v0.20.3) (2024-01-03)
+
+### ffplayout
+
+- improve live sources [9912405](https://github.com/ffplayout/ffplayout/commit/9912405e4e976b99be9d174fa9cc54700984d5a9)
+- update sysinfo to support stats on network storage [8737769](https://github.com/ffplayout/ffplayout/commit/873776908e10b2eb9d92fb743a578a848e95c49c)
+
+### Documentation
+
+- fix API examples [c8ca4588d](https://github.com/ffplayout/ffplayout/commit/c8ca4588d178b1f94f5c7dce40fd4a07a10a695b)
+
+## [0.20.2](https://github.com/ffplayout/ffplayout/releases/tag/v0.20.2) (2023-12-16)
+
+### ffplayout
+
+- better error message [5c14b89](https://github.com/ffplayout/ffplayout/commit/5c14b895f2c8e34990097354fea860a5030a5732)
+- warn and adjust duration on validation [a30f21b](https://github.com/ffplayout/ffplayout/commit/a30f21b86688fbf4de477279217ca3a739409719)
+
+### ffpapi
+
+- thread block on hashing [4c4199cb](https://github.com/ffplayout/ffplayout/commit/4c4199cbdb0836d69d67fd6dee1869fb08eeffbf)
+- remove salt from table [15f41148](https://github.com/ffplayout/ffplayout/commit/15f41148dfb26ccaea159f5c5305a966cf81b1c4)
+
+### frontend
+
+- possibility to preview live/html sources [5881527](https://github.com/ffplayout/ffplayout/pull/472/commits/5881527fc571feccaee7f7f1877750ccc44516f5)
+
+## [0.20.1](https://github.com/ffplayout/ffplayout/releases/tag/v0.20.1) (2023-12-03)
+
+### ffplayout
+
+- add silence detection for validation [ea83160](https://github.com/ffplayout/ffplayout/commit/ea83160ba63bb8723de1f004f6449b37a1ea2593)
+- loop separate audio when is to short [94e02ac](https://github.com/ffplayout/ffplayout/commit/94e02ac3678c0f8cdec97002f30e08beb45e748b)
+- add probe object in validation thread, to hopefully reduce latency and reduce unneeded file access [0330ad6](https://github.com/ffplayout/ffplayout/commit/0330ad61681a4cb576d4a46365c8cdffdfc96379)
+
+### ffpapi
+
+- update actix-web-grants to v4 [f1e87975](https://github.com/ffplayout/ffplayout/commit/f1e8797528e649aac6de85d897b7c03b8007a2b3)
+
+### frontend
+
+- call system status only when app is not hidden [3f22297](https://github.com/ffplayout/ffplayout/commit/3f222975c16580deeeedaa2e0721e4a312e7c8fb)
+- select, edit and delete user [f86a6c3](https://github.com/ffplayout/ffplayout/commit/f86a6c3f1dfb8ec5f3c8e74714b8eecda2b443c3)
+- global middleware [c60d60d](https://github.com/ffplayout/ffplayout/commit/c60d60d9b3f74095034760f22876aed877e0464f)
+
 ## [0.20.0](https://github.com/ffplayout/ffplayout/releases/tag/v0.20.0) (2023-11-16)
 
 ### ffplayout

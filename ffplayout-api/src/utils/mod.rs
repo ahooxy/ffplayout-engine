@@ -35,7 +35,7 @@ use crate::db::{
 use crate::utils::errors::ServiceError;
 use ffplayout_lib::utils::{time_to_sec, PlayoutConfig};
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum Role {
     Admin,
     User,
@@ -240,7 +240,6 @@ pub async fn run_args() -> Result<(), i32> {
             mail: Some(args.mail.unwrap()),
             username: username.clone(),
             password: args.password.unwrap(),
-            salt: None,
             role_id: Some(1),
             channel_id: Some(1),
             token: None,
