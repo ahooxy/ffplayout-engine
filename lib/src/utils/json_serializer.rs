@@ -73,8 +73,8 @@ fn set_defaults(
     for (i, item) in playlist.program.iter_mut().enumerate() {
         item.begin = Some(start_sec);
         item.index = Some(i);
-        item.last_ad = Some(false);
-        item.next_ad = Some(false);
+        item.last_ad = false;
+        item.next_ad = false;
         item.process = Some(true);
         item.filter = None;
 
@@ -115,8 +115,8 @@ fn loop_playlist(
                 probe_audio: item.probe_audio.clone(),
                 process: Some(true),
                 unit: Decoder,
-                last_ad: Some(false),
-                next_ad: Some(false),
+                last_ad: false,
+                next_ad: false,
                 filter: None,
                 custom_filter: String::new(),
             };
@@ -186,9 +186,16 @@ pub fn read_json(
 
                     let list_clone = playlist.clone();
 
-                    thread::spawn(move || {
-                        validate_playlist(config_clone, control_clone, list_clone, is_terminated)
-                    });
+                    if !config.general.skip_validation {
+                        thread::spawn(move || {
+                            validate_playlist(
+                                config_clone,
+                                control_clone,
+                                list_clone,
+                                is_terminated,
+                            )
+                        });
+                    }
 
                     match config.playlist.infinit {
                         true => return loop_playlist(config, current_file, playlist),
@@ -198,6 +205,8 @@ pub fn read_json(
             }
         }
     } else if playlist_path.is_file() {
+        let modified = modified_time(&current_file);
+
         let f = File::options()
             .read(true)
             .write(false)
@@ -216,13 +225,15 @@ pub fn read_json(
             playlist = JsonPlaylist::new(date, start_sec)
         }
 
-        playlist.modified = modified_time(&current_file);
+        playlist.modified = modified;
 
         let list_clone = playlist.clone();
 
-        thread::spawn(move || {
-            validate_playlist(config_clone, control_clone, list_clone, is_terminated)
-        });
+        if !config.general.skip_validation {
+            thread::spawn(move || {
+                validate_playlist(config_clone, control_clone, list_clone, is_terminated)
+            });
+        }
 
         match config.playlist.infinit {
             true => return loop_playlist(config, current_file, playlist),

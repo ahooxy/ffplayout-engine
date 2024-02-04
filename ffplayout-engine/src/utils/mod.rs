@@ -14,7 +14,7 @@ pub use arg_parse::Args;
 use ffplayout_lib::{
     filter::Filters,
     utils::{
-        config::Template, errors::ProcError, get_sec, parse_log_level_filter, sec_to_time,
+        config::Template, errors::ProcError, parse_log_level_filter, sec_to_time, time_in_seconds,
         time_to_sec, Media, OutputMode::*, PlayoutConfig, PlayoutStatus, ProcessMode::*,
     },
     vec_strings,
@@ -120,6 +120,8 @@ pub fn get_config(args: Args) -> Result<PlayoutConfig, ProcError> {
             config.out.output_cmd = Some(vec_strings!["-f", "null", "-"]);
         }
     }
+
+    config.general.skip_validation = args.skip_validation;
 
     if let Some(volume) = args.volume {
         config.processing.volume = volume;
@@ -252,7 +254,7 @@ pub fn get_data_map(
     server_is_running: bool,
 ) -> Map<String, Value> {
     let mut data_map = Map::new();
-    let current_time = get_sec();
+    let current_time = time_in_seconds();
     let shift = *playout_stat.time_shift.lock().unwrap();
     let begin = media.begin.unwrap_or(0.0) - shift;
 

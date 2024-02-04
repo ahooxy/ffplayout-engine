@@ -173,9 +173,17 @@ pub fn validate_playlist(
         let pos = index + 1;
 
         if item.audio.is_empty() {
-            item.add_probe(false);
-        } else {
-            item.add_probe(true);
+            if let Err(e) = item.add_probe(false) {
+                error!(
+                    "[Validation] Error on position <yellow>{pos:0>3}</> <yellow>{}</>: {e}",
+                    sec_to_time(begin)
+                );
+            }
+        } else if let Err(e) = item.add_probe(true) {
+            error!(
+                "[Validation] Error on position <yellow>{pos:0>3}</> <yellow>{}</>: {e}",
+                sec_to_time(begin)
+            );
         }
 
         if item.probe.is_some() {
@@ -183,42 +191,37 @@ pub fn validate_playlist(
                 error!("{e}");
             } else if config.general.validate {
                 debug!(
-                    "Source at <yellow>{}</>, seems fine: <b><magenta>{}</></b>",
+                    "[Validation] Source at <yellow>{}</>, seems fine: <b><magenta>{}</></b>",
                     sec_to_time(begin),
                     item.source
                 )
-            } else if let Ok(mut list) = player_control.current_list.lock() {
-                list.iter_mut().for_each(|o| {
-                    if o.source == item.source {
-                        o.probe = item.probe.clone();
+            } else if let Ok(mut list) = player_control.current_list.try_lock() {
+                // Filter out same item in current playlist, then add the probe to it.
+                // Check also if duration differs with playlist value, log error if so and adjust that value.
+                list.iter_mut().filter(|list_item| list_item.source == item.source).for_each(|o| {
+                    o.probe = item.probe.clone();
 
-                        if let Some(dur) =
-                            item.probe.as_ref().and_then(|f| f.format.duration.clone())
-                        {
-                            let probe_duration = dur.parse().unwrap_or_default();
+                    if let Some(dur) =
+                        item.probe.as_ref().and_then(|f| f.format.duration.clone())
+                    {
+                        let probe_duration = dur.parse().unwrap_or_default();
 
-                            if !is_close(o.duration, probe_duration, 1.2) {
-                                error!(
-                                    "File duration differs from playlist value. File duration: <b><magenta>{}</></b>, playlist value: <b><magenta>{}</></b>, source <yellow>{}</>",
-                                    sec_to_time(o.duration), sec_to_time(probe_duration), o.source
-                                );
+                        if !is_close(o.duration, probe_duration, 1.2) {
+                            error!(
+                                "[Validation] File duration (at: <yellow>{}</>) differs from playlist value. File duration: <yellow>{}</>, playlist value: <yellow>{}</>, source <b><magenta>{}</></b>",
+                                sec_to_time(o.begin.unwrap_or_default()), sec_to_time(probe_duration), sec_to_time(o.duration), o.source
+                            );
 
-                                o.duration = probe_duration;
-                            }
+                            o.duration = probe_duration;
                         }
                     }
+
                     if o.audio == item.audio && item.probe_audio.is_some() {
                         o.probe_audio = item.probe_audio.clone();
                         o.duration_audio = item.duration_audio;
                     }
                 });
             }
-        } else {
-            error!(
-                "Error on position <yellow>{pos:0>3}</> <b><magenta>{}</></b>, file: {}",
-                sec_to_time(begin),
-                item.source
-            );
         }
 
         begin += item.out - item.seek;
@@ -226,7 +229,7 @@ pub fn validate_playlist(
 
     if !config.playlist.infinit && length > begin + 1.2 {
         error!(
-            "Playlist from <yellow>{date}</> not long enough, <yellow>{}</> needed!",
+            "[Validation] Playlist from <yellow>{date}</> not long enough, <yellow>{}</> needed!",
             sec_to_time(length - begin),
         );
     }

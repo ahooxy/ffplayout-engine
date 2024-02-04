@@ -7,6 +7,8 @@ use sysinfo::System;
 use crate::{DISKS, NETWORKS, SYS};
 use ffplayout_lib::utils::PlayoutConfig;
 
+const IGNORE_INTERFACES: [&str; 7] = ["docker", "lxdbr", "tab", "tun", "virbr", "veth", "vnet"];
+
 #[derive(Debug, Serialize)]
 pub struct Cpu {
     pub cores: f32,
@@ -48,6 +50,7 @@ pub struct MySystem {
     pub name: Option<String>,
     pub kernel: Option<String>,
     pub version: Option<String>,
+    pub ffp_version: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -78,7 +81,11 @@ pub fn stat(config: PlayoutConfig) -> SystemStat {
     let mut interfaces = vec![];
 
     for (name, ip) in network_interfaces.iter() {
-        if !ip.is_loopback() {
+        if !ip.is_loopback()
+            && !IGNORE_INTERFACES
+                .iter()
+                .any(|&prefix| name.starts_with(prefix))
+        {
             interfaces.push((name, ip))
         }
     }
@@ -148,6 +155,7 @@ pub fn stat(config: PlayoutConfig) -> SystemStat {
         name: System::name(),
         kernel: System::kernel_version(),
         version: System::os_version(),
+        ffp_version: Some(env!("CARGO_PKG_VERSION").to_string()),
     };
 
     SystemStat {
