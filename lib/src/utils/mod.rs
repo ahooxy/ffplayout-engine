@@ -435,12 +435,8 @@ pub fn file_extension(filename: &Path) -> Option<&str> {
 
 /// Test if given numbers are close to each other,
 /// with a third number for setting the maximum range.
-pub fn is_close(a: f64, b: f64, to: f64) -> bool {
-    if (a - b).abs() < to {
-        return true;
-    }
-
-    false
+pub fn is_close<T: num_traits::Signed + std::cmp::PartialOrd>(a: T, b: T, to: T) -> bool {
+    (a - b).abs() < to
 }
 
 /// add duration from all media clips
@@ -529,6 +525,7 @@ pub fn loop_filler(node: &Media) -> Vec<String> {
 
 /// Set clip seek in and length value.
 pub fn seek_and_length(node: &mut Media) -> Vec<String> {
+    let loop_count = (node.out / node.duration).ceil() as i32;
     let mut source_cmd = vec![];
     let mut cut_audio = false;
     let mut loop_audio = false;
@@ -541,9 +538,15 @@ pub fn seek_and_length(node: &mut Media) -> Vec<String> {
         source_cmd.append(&mut vec_strings!["-ss", node.seek])
     }
 
+    if loop_count > 1 {
+        info!("Loop <b><magenta>{}</></b> <yellow>{loop_count}</> times, total duration: <yellow>{:.2}</>", node.source, node.out);
+
+        source_cmd.append(&mut vec_strings!["-stream_loop", loop_count]);
+    }
+
     source_cmd.append(&mut vec_strings!["-i", node.source.clone()]);
 
-    if node.duration > node.out || remote_source {
+    if node.duration > node.out || remote_source || loop_count > 1 {
         source_cmd.append(&mut vec_strings!["-t", node.out - node.seek]);
     }
 
@@ -552,9 +555,9 @@ pub fn seek_and_length(node: &mut Media) -> Vec<String> {
             source_cmd.append(&mut vec_strings!["-ss", node.seek]);
         }
 
-        if node.duration_audio > node.duration {
+        if node.duration_audio > node.out {
             cut_audio = true;
-        } else if node.duration_audio < node.duration {
+        } else if node.duration_audio < node.out {
             source_cmd.append(&mut vec_strings!["-stream_loop", -1]);
             loop_audio = true;
         }
@@ -612,7 +615,7 @@ pub fn gen_dummy(config: &PlayoutConfig, duration: f64) -> (String, Vec<String>)
 // }
 
 pub fn is_remote(path: &str) -> bool {
-    Regex::new(r"^(https?|rtmps?|rtp|rtsp|udp|tcp|srt)://.*")
+    Regex::new(r"^(https?|rtmps?|rts?p|udp|tcp|srt)://.*")
         .unwrap()
         .is_match(&path.to_lowercase())
 }
@@ -755,7 +758,7 @@ fn ffmpeg_filter_and_libs(config: &mut PlayoutConfig) -> Result<(), String> {
 
     // stderr shows only the ffmpeg configuration
     // get codec library's
-    for line in err_buffer.lines().flatten() {
+    for line in err_buffer.lines().map_while(Result::ok) {
         if line.contains("configuration:") {
             let configs = line.split_whitespace();
 
@@ -773,7 +776,7 @@ fn ffmpeg_filter_and_libs(config: &mut PlayoutConfig) -> Result<(), String> {
 
     // stdout shows filter from ffmpeg
     // get filters
-    for line in out_buffer.lines().flatten() {
+    for line in out_buffer.lines().map_while(Result::ok) {
         if line.contains('>') {
             let filter_line = line.split_whitespace().collect::<Vec<_>>();
 

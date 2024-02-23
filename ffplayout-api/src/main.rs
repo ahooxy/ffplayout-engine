@@ -11,7 +11,7 @@ use actix_web::{
 use actix_web_grants::authorities::AttachAuthorities;
 use actix_web_httpauth::{extractors::bearer::BearerAuth, middleware::HttpAuthentication};
 
-#[cfg(not(debug_assertions))]
+#[cfg(all(not(debug_assertions), feature = "embed_frontend"))]
 use actix_web_static_files::ResourceFiles;
 
 use clap::Parser;
@@ -28,9 +28,12 @@ use api::{auth, routes::*};
 use db::{db_pool, models::LoginUser};
 use utils::{args_parse::Args, control::ProcessControl, db_path, init_config, run_args};
 
+#[cfg(any(debug_assertions, not(feature = "embed_frontend")))]
+use utils::public_path;
+
 use ffplayout_lib::utils::{init_logging, PlayoutConfig};
 
-#[cfg(not(debug_assertions))]
+#[cfg(all(not(debug_assertions), feature = "embed_frontend"))]
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
 lazy_static! {
@@ -167,7 +170,7 @@ async fn main() -> std::io::Result<()> {
                 web_app = web_app.service(get_public);
             }
 
-            #[cfg(not(debug_assertions))]
+            #[cfg(all(not(debug_assertions), feature = "embed_frontend"))]
             {
                 // in release mode embed frontend
                 let generated = generate();
@@ -175,13 +178,10 @@ async fn main() -> std::io::Result<()> {
                     web_app.service(ResourceFiles::new("/", generated).resolve_not_found_to_root());
             }
 
-            #[cfg(debug_assertions)]
+            #[cfg(any(debug_assertions, not(feature = "embed_frontend")))]
             {
                 // in debug mode get frontend from path
-                web_app = web_app.service(
-                    Files::new("/", "./ffplayout-frontend/.output/public/")
-                        .index_file("index.html"),
-                );
+                web_app = web_app.service(Files::new("/", public_path()).index_file("index.html"));
             }
 
             web_app
