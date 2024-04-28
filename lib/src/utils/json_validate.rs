@@ -30,19 +30,27 @@ fn check_media(
     begin: f64,
     config: &PlayoutConfig,
 ) -> Result<(), ProcError> {
-    let mut enc_cmd = vec_strings!["-hide_banner", "-nostats", "-v", "level+info"];
+    let mut dec_cmd = vec_strings!["-hide_banner", "-nostats", "-v", "level+info"];
     let mut error_list = vec![];
     let mut config = config.clone();
     config.out.mode = Null;
 
     let mut process_length = 0.1;
 
+    if let Some(decoder_input_cmd) = config
+        .advanced
+        .as_ref()
+        .and_then(|a| a.decoder.input_cmd.clone())
+    {
+        dec_cmd.append(&mut decoder_input_cmd.clone());
+    }
+
     if config.logging.detect_silence {
         process_length = 15.0;
         let seek = node.duration / 4.0;
 
         // Seek in file, to prevent false silence detection on intros without sound.
-        enc_cmd.append(&mut vec_strings!["-ss", seek]);
+        dec_cmd.append(&mut vec_strings!["-ss", seek]);
     }
 
     // Take care, that no seek and length command is added.
@@ -75,13 +83,13 @@ fn check_media(
 
     filter.add_filter("silencedetect=n=-30dB", 0, Audio);
 
-    enc_cmd.append(&mut node.cmd.unwrap_or_default());
-    enc_cmd.append(&mut filter.cmd());
-    enc_cmd.append(&mut filter.map());
-    enc_cmd.append(&mut vec_strings!["-t", process_length, "-f", "null", "-"]);
+    dec_cmd.append(&mut node.cmd.unwrap_or_default());
+    dec_cmd.append(&mut filter.cmd());
+    dec_cmd.append(&mut filter.map());
+    dec_cmd.append(&mut vec_strings!["-t", process_length, "-f", "null", "-"]);
 
     let mut enc_proc = Command::new("ffmpeg")
-        .args(enc_cmd)
+        .args(dec_cmd)
         .stderr(Stdio::piped())
         .spawn()?;
 
@@ -95,6 +103,7 @@ fn check_media(
         let line = line?;
 
         if !FFMPEG_IGNORE_ERRORS.iter().any(|i| line.contains(*i))
+            && !config.logging.ignore_lines.iter().any(|i| line.contains(i))
             && (line.contains("[error]") || line.contains("[fatal]"))
         {
             let log_line = line.replace("[error] ", "").replace("[fatal] ", "");
@@ -236,5 +245,16 @@ pub fn validate_playlist(
         );
     }
 
-    debug!("Validation done, in {:.3?} ...", timer.elapsed(),);
+    if config.general.validate {
+        info!(
+            "[Validation] Playlist length: <yellow>{}</>",
+            sec_to_time(begin - config.playlist.start_sec.unwrap())
+        );
+    }
+
+    debug!(
+        "Validation done, in <yellow>{:.3?}</>, playlist length: <yellow>{}</> ...",
+        timer.elapsed(),
+        sec_to_time(begin - config.playlist.start_sec.unwrap())
+    );
 }

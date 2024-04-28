@@ -6,7 +6,7 @@ use std::{
 
 use regex::Regex;
 
-use crate::utils::{controller::ProcessUnit::*, Media, PlayoutConfig};
+use crate::utils::{controller::ProcessUnit::*, custom_format, Media, PlayoutConfig};
 
 pub fn filter_node(
     config: &PlayoutConfig,
@@ -43,7 +43,15 @@ pub fn filter_node(
             .replace('\'', "'\\\\\\''")
             .replace('%', "\\\\\\%")
             .replace(':', "\\:");
-        filter = format!("drawtext=text='{escaped_text}':{}{font}", config.text.style)
+
+        filter = match &config
+            .advanced
+            .clone()
+            .and_then(|a| a.decoder.filters.drawtext_from_file)
+        {
+            Some(drawtext) => custom_format(drawtext, &[&escaped_text, &config.text.style, &font]),
+            None => format!("drawtext=text='{escaped_text}':{}{font}", config.text.style),
+        };
     } else if let Some(socket) = zmq_socket {
         let mut filter_cmd = format!("text=''{font}");
 
@@ -53,10 +61,17 @@ pub fn filter_node(
             }
         }
 
-        filter = format!(
-            "zmq=b=tcp\\\\://'{}',drawtext@dyntext={filter_cmd}",
-            socket.replace(':', "\\:")
-        )
+        filter = match config
+            .advanced
+            .as_ref()
+            .and_then(|a| a.decoder.filters.drawtext_from_zmq.clone())
+        {
+            Some(drawtext) => custom_format(&drawtext, &[&socket.replace(':', "\\:"), &filter_cmd]),
+            None => format!(
+                "zmq=b=tcp\\\\://'{}',drawtext@dyntext={filter_cmd}",
+                socket.replace(':', "\\:")
+            ),
+        };
     }
 
     filter

@@ -11,6 +11,8 @@ use log::LevelFilter;
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use shlex::split;
 
+use crate::AdvancedConfig;
+
 use super::vec_strings;
 use crate::utils::{free_tcp_socket, home_dir, time_to_sec, OutputMode::*};
 
@@ -143,6 +145,8 @@ pub struct Source {
 /// This we init ones, when ffplayout is starting and use them globally in the hole program.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PlayoutConfig {
+    #[serde(default, skip_serializing, skip_deserializing)]
+    pub advanced: Option<AdvancedConfig>,
     pub general: General,
     pub rpc_server: RpcServer,
     pub mail: Mail,
@@ -227,6 +231,8 @@ pub struct Logging {
     pub ingest_level: Option<String>,
     #[serde(default)]
     pub detect_silence: bool,
+    #[serde(default)]
+    pub ignore_lines: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -249,7 +255,7 @@ pub struct Processing {
     pub logo: String,
     pub logo_scale: String,
     pub logo_opacity: f32,
-    pub logo_filter: String,
+    pub logo_position: String,
     #[serde(default = "default_tracks")]
     pub audio_tracks: i32,
     #[serde(default = "default_channels")]
@@ -325,6 +331,7 @@ pub struct Text {
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct Task {
+    pub help_text: String,
     pub enable: bool,
     pub path: PathBuf,
 }
@@ -357,7 +364,7 @@ fn default_channels() -> u8 {
 
 impl PlayoutConfig {
     /// Read config from YAML file, and set some extra config values.
-    pub fn new(cfg_path: Option<PathBuf>) -> Self {
+    pub fn new(cfg_path: Option<PathBuf>, advanced_path: Option<PathBuf>) -> Self {
         let mut config_path = PathBuf::from("/etc/ffplayout/ffplayout.yml");
 
         if let Some(cfg) = cfg_path {
@@ -375,8 +382,8 @@ impl PlayoutConfig {
         let f = match File::open(&config_path) {
             Ok(file) => file,
             Err(_) => {
-                println!(
-                    "{config_path:?} doesn't exists!\nPut \"ffplayout.yml\" in \"/etc/playout/\" or beside the executable!"
+                eprintln!(
+                    "ffplayout.yml not found!\nPut \"ffplayout.yml\" in \"/etc/playout/\" or beside the executable!"
                 );
                 process::exit(1);
             }
@@ -384,6 +391,11 @@ impl PlayoutConfig {
 
         let mut config: PlayoutConfig =
             serde_yaml::from_reader(f).expect("Could not read config file.");
+
+        if let Some(adv_path) = advanced_path {
+            config.advanced = Some(AdvancedConfig::new(adv_path))
+        }
+
         config.general.generate = None;
 
         config.general.config_path = config_path.to_string_lossy().to_string();
@@ -424,23 +436,29 @@ impl PlayoutConfig {
             config.processing.audio_tracks = 1
         }
 
-        let bitrate = format!(
-            "{}k",
-            config.processing.width * config.processing.height / 16
-        );
-
-        let buff_size = format!(
-            "{}k",
-            (config.processing.width * config.processing.height / 16) / 2
-        );
-
         let mut process_cmd = vec_strings![];
+        let advanced_output_cmd = config
+            .advanced
+            .as_ref()
+            .and_then(|a| a.decoder.output_cmd.clone());
 
         if config.processing.audio_only {
             process_cmd.append(&mut vec_strings!["-vn"]);
         } else if config.processing.copy_video {
             process_cmd.append(&mut vec_strings!["-c:v", "copy"]);
+        } else if let Some(decoder_cmd) = &advanced_output_cmd {
+            process_cmd.append(&mut decoder_cmd.clone());
         } else {
+            let bitrate = format!(
+                "{}k",
+                config.processing.width * config.processing.height / 16
+            );
+
+            let buff_size = format!(
+                "{}k",
+                (config.processing.width * config.processing.height / 16) / 2
+            );
+
             process_cmd.append(&mut vec_strings![
                 "-pix_fmt",
                 "yuv420p",
@@ -463,7 +481,7 @@ impl PlayoutConfig {
 
         if config.processing.copy_audio {
             process_cmd.append(&mut vec_strings!["-c:a", "copy"]);
-        } else {
+        } else if advanced_output_cmd.is_none() {
             process_cmd.append(&mut pre_audio_codec(
                 &config.processing.custom_filter,
                 &config.ingest.custom_filter,
@@ -523,7 +541,7 @@ impl PlayoutConfig {
 
 impl Default for PlayoutConfig {
     fn default() -> Self {
-        Self::new(None)
+        Self::new(None, None)
     }
 }
 

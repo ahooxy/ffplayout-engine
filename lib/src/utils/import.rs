@@ -19,8 +19,9 @@ pub fn import_file(
     let mut playlist = JsonPlaylist {
         channel: channel_name.unwrap_or_else(|| "Channel 1".to_string()),
         date: date.to_string(),
-        current_file: None,
+        path: None,
         start_sec: None,
+        length: None,
         modified: None,
         program: vec![],
     };
@@ -60,11 +61,10 @@ pub fn import_file(
 
     if playlist_file.is_file() {
         file_exists = true;
-        let existing_data = json_reader(playlist_file)?;
+        let mut existing_data = json_reader(playlist_file)?;
+        existing_data.program.append(&mut playlist.program);
 
-        if playlist == existing_data {
-            return Ok(format!("Playlist from {date}, already exists!"));
-        }
+        playlist.program = existing_data.program;
     };
 
     let mut msg = format!("Write playlist from {date} success!");

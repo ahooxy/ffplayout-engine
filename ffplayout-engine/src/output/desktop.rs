@@ -10,16 +10,23 @@ use ffplayout_lib::{filter::v_drawtext, utils::PlayoutConfig, vec_strings};
 pub fn output(config: &PlayoutConfig, log_format: &str) -> process::Child {
     let mut enc_filter: Vec<String> = vec![];
 
-    let mut enc_cmd = vec_strings![
-        "-hide_banner",
-        "-nostats",
-        "-v",
-        log_format,
+    let mut enc_cmd = vec_strings!["-hide_banner", "-nostats", "-v", log_format];
+
+    if let Some(encoder_input_cmd) = config
+        .advanced
+        .as_ref()
+        .and_then(|a| a.encoder.input_cmd.clone())
+    {
+        enc_cmd.append(&mut encoder_input_cmd.clone());
+    }
+
+    enc_cmd.append(&mut vec_strings![
+        "-autoexit",
         "-i",
         "pipe:0",
         "-window_title",
         "ffplayout"
-    ];
+    ]);
 
     if let Some(mut cmd) = config.out.output_cmd.clone() {
         if !cmd.iter().any(|i| {

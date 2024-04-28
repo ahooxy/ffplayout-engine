@@ -42,6 +42,7 @@ pub fn player(
 ) {
     let config_clone = config.clone();
     let ff_log_format = format!("level+{}", config.logging.ffmpeg_level.to_lowercase());
+    let ignore_enc = config.logging.ignore_lines.clone();
     let mut buffer = [0; 65088];
     let mut live_on = false;
     let playlist_init = playout_stat.list_init.clone();
@@ -70,7 +71,8 @@ pub fn player(
     let enc_p_ctl = proc_control.clone();
 
     // spawn a thread to log ffmpeg output error messages
-    let error_encoder_thread = thread::spawn(move || stderr_reader(enc_err, Encoder, enc_p_ctl));
+    let error_encoder_thread =
+        thread::spawn(move || stderr_reader(enc_err, ignore_enc, Encoder, enc_p_ctl));
 
     let proc_control_c = proc_control.clone();
     let mut ingest_receiver = None;
@@ -84,6 +86,7 @@ pub fn player(
 
     'source_iter: for node in node_sources {
         *play_control.current_media.lock().unwrap() = Some(node.clone());
+        let ignore_dec = config.logging.ignore_lines.clone();
 
         if proc_control.is_terminated.load(Ordering::SeqCst) {
             debug!("Playout is terminated, break out from source loop");
@@ -104,8 +107,18 @@ pub fn player(
             continue;
         }
 
+        let c_index = if cfg!(debug_assertions) {
+            format!(
+                " ({}/{})",
+                node.index.unwrap() + 1,
+                play_control.current_list.lock().unwrap().len()
+            )
+        } else {
+            String::new()
+        };
+
         info!(
-            "Play for <yellow>{}</>: <b><magenta>{}  {}</></b>",
+            "Play for <yellow>{}</>{c_index}: <b><magenta>{}  {}</></b>",
             sec_to_time(node.out - node.seek),
             node.source,
             node.audio
@@ -130,6 +143,15 @@ pub fn player(
         }
 
         let mut dec_cmd = vec_strings!["-hide_banner", "-nostats", "-v", &ff_log_format];
+
+        if let Some(decoder_input_cmd) = config
+            .advanced
+            .as_ref()
+            .and_then(|a| a.decoder.input_cmd.clone())
+        {
+            dec_cmd.append(&mut decoder_input_cmd.clone());
+        }
+
         dec_cmd.append(&mut cmd);
 
         if let Some(mut filter) = node.filter {
@@ -167,7 +189,7 @@ pub fn player(
         let dec_p_ctl = proc_control.clone();
 
         let error_decoder_thread =
-            thread::spawn(move || stderr_reader(dec_err, Decoder, dec_p_ctl));
+            thread::spawn(move || stderr_reader(dec_err, ignore_dec, Decoder, dec_p_ctl));
 
         loop {
             // when server is running, read from it

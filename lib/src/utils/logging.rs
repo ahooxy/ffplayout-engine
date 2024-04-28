@@ -191,6 +191,7 @@ pub fn init_logging(
         .add_filter_ignore_str("reqwest")
         .add_filter_ignore_str("rpc")
         .add_filter_ignore_str("rustls")
+        .add_filter_ignore_str("serial_test")
         .add_filter_ignore_str("sqlx")
         .add_filter_ignore_str("tiny_http")
         .set_level_padding(LevelPadding::Left)
@@ -218,7 +219,7 @@ pub fn init_logging(
         } else if app_config.path.is_file() {
             log_path = app_config.path
         } else {
-            println!("Logging path not exists!")
+            eprintln!("Logging path not exists!")
         }
 
         let log_file = FileRotate::new(

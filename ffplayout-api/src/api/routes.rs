@@ -8,7 +8,7 @@
 ///
 /// For all endpoints an (Bearer) authentication is required.\
 /// `{id}` represent the channel id, and at default is 1.
-use std::{collections::HashMap, env, fs, path::PathBuf};
+use std::{collections::HashMap, env, path::PathBuf};
 
 use actix_files;
 use actix_multipart::Multipart;
@@ -26,13 +26,13 @@ use argon2::{
     password_hash::{rand_core::OsRng, PasswordHash, SaltString},
     Argon2, PasswordHasher, PasswordVerifier,
 };
-use chrono::{DateTime, Datelike, Duration, Local, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Local, NaiveDateTime, TimeDelta, TimeZone, Utc};
 use path_clean::PathClean;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use simplelog::*;
 use sqlx::{Pool, Sqlite};
-use tokio::task;
+use tokio::{fs, task};
 
 use crate::db::{
     handles,
@@ -817,7 +817,7 @@ pub async fn save_playlist(
     data: web::Json<JsonPlaylist>,
 ) -> Result<impl Responder, ServiceError> {
     match write_playlist(&pool.into_inner(), *id, data.into_inner()).await {
-        Ok(res) => Ok(res),
+        Ok(res) => Ok(web::Json(res)),
         Err(e) => Err(e),
     }
 }
@@ -885,7 +885,7 @@ pub async fn del_playlist(
     params: web::Path<(i32, String)>,
 ) -> Result<impl Responder, ServiceError> {
     match delete_playlist(&pool.into_inner(), params.0, &params.1).await {
-        Ok(_) => Ok(format!("Delete playlist from {} success!", params.1)),
+        Ok(m) => Ok(web::Json(m)),
         Err(e) => Err(e),
     }
 }
@@ -1084,6 +1084,7 @@ async fn import_playlist(
 ) -> Result<HttpResponse, ServiceError> {
     let file = obj.file.file_name().unwrap_or_default();
     let path = env::temp_dir().join(file);
+    let path_clone = path.clone();
     let (config, _) = playout_config(&pool.clone().into_inner(), &id).await?;
     let channel = handles::select_channel(&pool.clone().into_inner(), &id).await?;
     let size: u64 = req
@@ -1094,11 +1095,15 @@ async fn import_playlist(
         .unwrap_or(0);
 
     upload(&pool.into_inner(), *id, size, payload, &path, true).await?;
-    import_file(&config, &obj.date, Some(channel.name), &path)?;
 
-    fs::remove_file(path)?;
+    let response = task::spawn_blocking(move || {
+        import_file(&config, &obj.date, Some(channel.name), &path_clone)
+    })
+    .await??;
 
-    Ok(HttpResponse::Ok().into())
+    fs::remove_file(path).await?;
+
+    Ok(HttpResponse::Ok().body(response))
 }
 
 /// **Program info**
@@ -1149,7 +1154,7 @@ async fn get_program(
     }
 
     let date_range = get_date_range(&vec_strings![
-        (after - Duration::days(days)).format("%Y-%m-%d"),
+        (after - TimeDelta::try_days(days).unwrap_or_default()).format("%Y-%m-%d"),
         "-",
         before.format("%Y-%m-%d")
     ]);
@@ -1194,7 +1199,8 @@ async fn get_program(
                 program.push(p_item);
             }
 
-            naive += Duration::milliseconds(((item.out - item.seek) * 1000.0) as i64);
+            naive += TimeDelta::try_milliseconds(((item.out - item.seek) * 1000.0) as i64)
+                .unwrap_or_default();
         }
     }
 

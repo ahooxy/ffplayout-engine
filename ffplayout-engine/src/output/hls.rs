@@ -47,9 +47,18 @@ fn ingest_to_hls_server(
 
     let mut server_prefix = vec_strings!["-hide_banner", "-nostats", "-v", "level+info"];
     let stream_input = config.ingest.input_cmd.clone().unwrap();
-    server_prefix.append(&mut stream_input.clone());
     let mut dummy_media = Media::new(0, "Live Stream", false);
     dummy_media.unit = Ingest;
+
+    if let Some(ingest_input_cmd) = config
+        .advanced
+        .as_ref()
+        .and_then(|a| a.ingest.input_cmd.clone())
+    {
+        server_prefix.append(&mut ingest_input_cmd.clone());
+    }
+
+    server_prefix.append(&mut stream_input.clone());
 
     let mut is_running;
 
@@ -104,7 +113,7 @@ fn ingest_to_hls_server(
 
                 info!("Switch from {} to live ingest", config.processing.mode);
 
-                if let Err(e) = proc_control.stop(Encoder) {
+                if let Err(e) = proc_control.stop(Decoder) {
                     error!("{e}");
                 }
             }
@@ -161,6 +170,7 @@ pub fn write_hls(
 
     for node in get_source {
         *player_control.current_media.lock().unwrap() = Some(node.clone());
+        let ignore = config.logging.ignore_lines.clone();
 
         let mut cmd = match &node.cmd {
             Some(cmd) => cmd.clone(),
@@ -197,6 +207,14 @@ pub fn write_hls(
 
         let mut enc_prefix = vec_strings!["-hide_banner", "-nostats", "-v", &ff_log_format];
 
+        if let Some(encoder_input_cmd) = config
+            .advanced
+            .as_ref()
+            .and_then(|a| a.encoder.input_cmd.clone())
+        {
+            enc_prefix.append(&mut encoder_input_cmd.clone());
+        }
+
         let mut read_rate = 1.0;
 
         if let Some(begin) = &node.begin {
@@ -228,17 +246,17 @@ pub fn write_hls(
             .stderr(Stdio::piped())
             .spawn()
         {
+            Ok(proc) => proc,
             Err(e) => {
                 error!("couldn't spawn ffmpeg process: {e}");
                 panic!("couldn't spawn ffmpeg process: {e}")
             }
-            Ok(proc) => proc,
         };
 
         let enc_err = BufReader::new(dec_proc.stderr.take().unwrap());
         *proc_control.decoder_term.lock().unwrap() = Some(dec_proc);
 
-        if let Err(e) = stderr_reader(enc_err, Decoder, proc_control.clone()) {
+        if let Err(e) = stderr_reader(enc_err, ignore, Decoder, proc_control.clone()) {
             error!("{e:?}")
         };
 
