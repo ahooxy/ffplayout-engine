@@ -93,9 +93,23 @@ impl CurrentProgram {
                 if let Some(file) = &self.json_playlist.path {
                     info!("Read playlist: <b><magenta>{file}</></b>");
                 }
+
+                if *self.playout_stat.date.lock().unwrap() != self.json_playlist.date {
+                    self.set_status(self.json_playlist.date.clone());
+                }
+
+                self.playout_stat
+                    .current_date
+                    .lock()
+                    .unwrap()
+                    .clone_from(&self.json_playlist.date);
             }
 
-            *self.player_control.current_list.lock().unwrap() = self.json_playlist.program.clone();
+            self.player_control
+                .current_list
+                .lock()
+                .unwrap()
+                .clone_from(&self.json_playlist.program);
 
             if self.json_playlist.path.is_none() {
                 trace!("missing playlist");
@@ -121,8 +135,6 @@ impl CurrentProgram {
 
         let node_index = self.current_node.index.unwrap_or_default();
 
-        trace!("delta: {delta}, total_delta: {total_delta}, current index: {node_index}",);
-
         let mut next_start =
             self.current_node.begin.unwrap_or_default() - self.start_sec + duration + delta;
 
@@ -133,7 +145,7 @@ impl CurrentProgram {
         }
 
         trace!(
-            "next_start: {next_start} | end_sec: {} | source {}",
+            "delta: {delta} | total_delta: {total_delta}, index: {node_index} \nnext_start: {next_start} | end_sec: {} | source {}",
             self.end_sec,
             self.current_node.source
         );
@@ -163,7 +175,11 @@ impl CurrentProgram {
             self.playout_stat.list_init.store(false, Ordering::SeqCst);
             self.set_status(self.json_playlist.date.clone());
 
-            *self.player_control.current_list.lock().unwrap() = self.json_playlist.program.clone();
+            self.player_control
+                .current_list
+                .lock()
+                .unwrap()
+                .clone_from(&self.json_playlist.program);
             self.player_control.current_index.store(0, Ordering::SeqCst);
         } else {
             self.load_or_update_playlist(seek)
@@ -173,7 +189,17 @@ impl CurrentProgram {
     }
 
     fn set_status(&mut self, date: String) {
-        *self.playout_stat.current_date.lock().unwrap() = date.clone();
+        if *self.playout_stat.date.lock().unwrap() != date
+            && *self.playout_stat.time_shift.lock().unwrap() != 0.0
+        {
+            info!("Reset playout status");
+        }
+
+        self.playout_stat
+            .current_date
+            .lock()
+            .unwrap()
+            .clone_from(&date);
         *self.playout_stat.time_shift.lock().unwrap() = 0.0;
 
         if let Err(e) = fs::write(
@@ -222,10 +248,7 @@ impl CurrentProgram {
         let mut time_sec = self.get_current_time();
         let shift = *self.playout_stat.time_shift.lock().unwrap();
 
-        if *self.playout_stat.current_date.lock().unwrap()
-            == *self.playout_stat.date.lock().unwrap()
-            && shift != 0.0
-        {
+        if shift != 0.0 {
             info!("Shift playlist start for <yellow>{shift:.3}</> seconds");
             time_sec += shift;
         }
@@ -348,7 +371,11 @@ impl CurrentProgram {
 
         self.json_playlist.start_sec = Some(time_sec);
         set_defaults(&mut self.json_playlist);
-        *self.player_control.current_list.lock().unwrap() = self.json_playlist.program.clone();
+        self.player_control
+            .current_list
+            .lock()
+            .unwrap()
+            .clone_from(&self.json_playlist.program);
     }
 }
 
@@ -357,7 +384,7 @@ impl Iterator for CurrentProgram {
     type Item = Media;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.last_json_path = self.json_playlist.path.clone();
+        self.last_json_path.clone_from(&self.json_playlist.path);
         self.last_node_ad = self.current_node.last_ad;
         self.check_for_playlist(self.playout_stat.list_init.load(Ordering::SeqCst));
 

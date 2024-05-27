@@ -1,4 +1,4 @@
-// use std::cmp;
+use std::fmt;
 
 use local_ip_address::list_afinet_netifas;
 use serde::Serialize;
@@ -71,6 +71,12 @@ pub struct SystemStat {
     pub system: MySystem,
 }
 
+impl fmt::Display for SystemStat {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", serde_json::to_string(self).unwrap())
+    }
+}
+
 pub fn stat(config: PlayoutConfig) -> SystemStat {
     let mut disks = DISKS.lock().unwrap();
     let mut networks = NETWORKS.lock().unwrap();
@@ -137,7 +143,7 @@ pub fn stat(config: PlayoutConfig) -> SystemStat {
 
     for (interface_name, data) in &*networks {
         if !interfaces.is_empty() && interface_name == interfaces[0].0 {
-            network.name = interface_name.clone();
+            network.name.clone_from(interface_name);
             network.current_in = data.received();
             network.total_in = data.total_received();
             network.current_out = data.transmitted();

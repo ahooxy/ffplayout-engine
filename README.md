@@ -176,20 +176,23 @@ Output from `{"media":"current"}` show:
 
 ```JSON
 {
-    "current_media": {
+    "media": {
         "category": "",
         "duration": 154.2,
         "out": 154.2,
-        "seek": 0.0,
+        "in": 0.0,
         "source": "/opt/tv-media/clip.mp4"
     },
     "index": 39,
-    "play_mode": "playlist",
-    "played_sec": 67.80771999300123,
-    "remaining_sec": 86.39228000699876,
-    "start_sec": 24713.631999999998,
-    "start_time": "06:51:53.631"
+    "mode": "playlist",
+    "ingest": false,
+    "played": 67.80771999300123,
 }
 ```
 
 If you are in playlist mode and move backwards or forwards in time, the time shift is saved so the playlist is still in sync. Bear in mind, however, that this may make your playlist too short. If you do not reset it, it will automatically reset the next day.
+
+## Founding
+
+If you like this project and would like to make a donation, please use one of the options provided.
+Please note that donations are not intended to get support or features! Donations are only a sign of appreciation.

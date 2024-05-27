@@ -39,6 +39,7 @@ impl JsonPlaylist {
     pub fn new(date: String, start: f64) -> Self {
         let mut media = Media::new(0, "", false);
         media.begin = Some(start);
+        media.title = None;
         media.duration = DUMMY_LEN;
         media.out = DUMMY_LEN;
         Self {
@@ -114,7 +115,7 @@ pub fn read_json(
     let mut current_file = playlist_path.as_path().display().to_string();
 
     if let Some(p) = path {
-        playlist_path = Path::new(&p).to_owned();
+        Path::new(&p).clone_into(&mut playlist_path);
         current_file = p
     }
 

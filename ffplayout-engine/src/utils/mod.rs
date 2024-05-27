@@ -15,8 +15,8 @@ pub use arg_parse::Args;
 use ffplayout_lib::{
     filter::Filters,
     utils::{
-        config::Template, errors::ProcError, parse_log_level_filter, sec_to_time, time_in_seconds,
-        time_to_sec, Media, OutputMode::*, PlayoutConfig, PlayoutStatus, ProcessMode::*,
+        config::Template, errors::ProcError, parse_log_level_filter, time_in_seconds, time_to_sec,
+        Media, OutputMode::*, PlayoutConfig, PlayoutStatus, ProcessMode::*,
     },
     vec_strings,
 };
@@ -25,7 +25,7 @@ use ffplayout_lib::{
 pub fn get_config(args: Args) -> Result<PlayoutConfig, ProcError> {
     let cfg_path = match args.channel {
         Some(c) => {
-            let path = PathBuf::from(format!("/etc/ffplayout/{c}.yml"));
+            let path = PathBuf::from(format!("/etc/ffplayout/{c}.toml"));
 
             if !path.is_file() {
                 return Err(ProcError::Custom(format!(
@@ -38,15 +38,15 @@ pub fn get_config(args: Args) -> Result<PlayoutConfig, ProcError> {
         None => args.config,
     };
 
-    let mut adv_config_path = PathBuf::from("/etc/ffplayout/advanced.yml");
+    let mut adv_config_path = PathBuf::from("/etc/ffplayout/advanced.toml");
 
     if let Some(adv_path) = args.advanced_config {
         adv_config_path = adv_path;
     } else if !adv_config_path.is_file() {
-        if Path::new("./assets/advanced.yml").is_file() {
-            adv_config_path = PathBuf::from("./assets/advanced.yml")
+        if Path::new("./assets/advanced.toml").is_file() {
+            adv_config_path = PathBuf::from("./assets/advanced.toml")
         } else if let Some(p) = env::current_exe().ok().as_ref().and_then(|op| op.parent()) {
-            adv_config_path = p.join("advanced.yml")
+            adv_config_path = p.join("advanced.toml")
         };
     }
 
@@ -101,12 +101,12 @@ pub fn get_config(args: Args) -> Result<PlayoutConfig, ProcError> {
     }
 
     if let Some(start) = args.start {
-        config.playlist.day_start = start.clone();
+        config.playlist.day_start.clone_from(&start);
         config.playlist.start_sec = Some(time_to_sec(&start));
     }
 
     if let Some(length) = args.length {
-        config.playlist.length = length.clone();
+        config.playlist.length.clone_from(&length);
 
         if length.contains(':') {
             config.playlist.length_sec = Some(time_to_sec(&length));
@@ -251,13 +251,21 @@ pub fn prepare_output_cmd(
 
 /// map media struct to json object
 pub fn get_media_map(media: Media) -> Value {
-    json!({
-        "seek": media.seek,
+    let mut obj = json!({
+        "in": media.seek,
         "out": media.out,
         "duration": media.duration,
         "category": media.category,
         "source": media.source,
-    })
+    });
+
+    if let Some(title) = media.title {
+        obj.as_object_mut()
+            .unwrap()
+            .insert("title".to_string(), Value::String(title));
+    }
+
+    obj
 }
 
 /// prepare json object for response
@@ -271,22 +279,20 @@ pub fn get_data_map(
     let current_time = time_in_seconds();
     let shift = *playout_stat.time_shift.lock().unwrap();
     let begin = media.begin.unwrap_or(0.0) - shift;
+    let played_time = current_time - begin;
 
-    data_map.insert("play_mode".to_string(), json!(config.processing.mode));
-    data_map.insert("ingest_runs".to_string(), json!(server_is_running));
     data_map.insert("index".to_string(), json!(media.index));
-    data_map.insert("start_sec".to_string(), json!(begin));
-
-    if begin > 0.0 {
-        let played_time = current_time - begin;
-        let remaining_time = media.out - played_time;
-
-        data_map.insert("start_time".to_string(), json!(sec_to_time(begin)));
-        data_map.insert("played_sec".to_string(), json!(played_time));
-        data_map.insert("remaining_sec".to_string(), json!(remaining_time));
-    }
-
-    data_map.insert("current_media".to_string(), get_media_map(media));
+    data_map.insert("ingest".to_string(), json!(server_is_running));
+    data_map.insert("mode".to_string(), json!(config.processing.mode));
+    data_map.insert(
+        "shift".to_string(),
+        json!((shift * 1000.0).round() / 1000.0),
+    );
+    data_map.insert(
+        "elapsed".to_string(),
+        json!((played_time * 1000.0).round() / 1000.0),
+    );
+    data_map.insert("media".to_string(), get_media_map(media));
 
     data_map
 }
