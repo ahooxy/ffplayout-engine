@@ -406,6 +406,8 @@ impl Playlist {
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Storage {
     pub help_text: String,
+    #[serde(skip_deserializing)]
+    pub path: PathBuf,
     #[serde(skip_serializing, skip_deserializing)]
     pub paths: Vec<PathBuf>,
     pub filler: PathBuf,
@@ -414,9 +416,10 @@ pub struct Storage {
 }
 
 impl Storage {
-    fn new(config: &models::Configuration) -> Self {
+    fn new(config: &models::Configuration, path: PathBuf) -> Self {
         Self {
             help_text: config.storage_help.clone(),
+            path,
             paths: vec![],
             filler: PathBuf::from(config.storage_filler.clone()),
             extensions: config
@@ -564,7 +567,6 @@ impl PlayoutConfig {
         let mut processing = Processing::new(&config);
         let mut ingest = Ingest::new(&config);
         let mut playlist = Playlist::new(&config);
-        let mut storage = Storage::new(&config);
         let mut text = Text::new(&config);
         let task = Task::new(&config);
         let mut output = Output::new(&config);
@@ -576,8 +578,12 @@ impl PlayoutConfig {
         if !global.storage_path.is_dir() {
             tokio::fs::create_dir_all(&global.storage_path)
                 .await
-                .expect("Can't create storage folder");
+                .unwrap_or_else(|_| {
+                    panic!("Can't create storage folder: {:#?}", global.storage_path)
+                });
         }
+
+        let mut storage = Storage::new(&config, global.storage_path.clone());
 
         if channel_id > 1 || !global.shared_storage {
             global.playlist_path = global.playlist_path.join(channel_id.to_string());
@@ -587,13 +593,17 @@ impl PlayoutConfig {
         if !global.playlist_path.is_dir() {
             tokio::fs::create_dir_all(&global.playlist_path)
                 .await
-                .expect("Can't create playlist folder");
+                .unwrap_or_else(|_| {
+                    panic!("Can't create playlist folder: {:#?}", global.playlist_path)
+                });
         }
 
         if !global.logging_path.is_dir() {
             tokio::fs::create_dir_all(&global.logging_path)
                 .await
-                .expect("Can't create logging folder");
+                .unwrap_or_else(|_| {
+                    panic!("Can't create logging folder: {:#?}", global.logging_path)
+                });
         }
 
         let (filler_path, _, _) = norm_abs_path(&global.storage_path, &config.storage_filler)
