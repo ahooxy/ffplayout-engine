@@ -41,7 +41,7 @@ use tokio::fs;
 use crate::db::models::Role;
 use crate::utils::{
     channels::{create_channel, delete_channel},
-    config::{PlayoutConfig, Template},
+    config::{get_config, PlayoutConfig, Template},
     control::{control_state, send_message, ControlParams, Process, ProcessCtl},
     errors::ServiceError,
     files::{
@@ -309,6 +309,7 @@ async fn update_user(
     role: AuthDetails<Role>,
     user: web::ReqData<UserMeta>,
 ) -> Result<impl Responder, ServiceError> {
+    let channel_ids = data.channel_ids.clone().unwrap_or_default();
     let mut fields = String::new();
 
     if let Some(mail) = data.mail.clone() {
@@ -317,21 +318,6 @@ async fn update_user(
         }
 
         fields.push_str(&format!("mail = '{mail}'"));
-    }
-
-    if let Some(channel_ids) = &data.channel_ids {
-        if !fields.is_empty() {
-            fields.push_str(", ");
-        }
-
-        fields.push_str(&format!(
-            "channel_ids = '{}'",
-            channel_ids
-                .iter()
-                .map(|i| i.to_string())
-                .collect::<Vec<String>>()
-                .join(",")
-        ));
     }
 
     if !data.password.is_empty() {
@@ -354,11 +340,19 @@ async fn update_user(
         fields.push_str(&format!("password = '{password_hash}'"));
     }
 
-    if handles::update_user(&pool, *id, fields).await.is_ok() {
-        return Ok("Update Success");
-    };
+    handles::update_user(&pool, *id, fields).await?;
 
-    Err(ServiceError::InternalServerError)
+    let related_channels = handles::select_related_channels(&pool, Some(*id)).await?;
+
+    for channel in related_channels {
+        if !channel_ids.contains(&channel.id) {
+            handles::delete_user_channel(&pool, *id, channel.id).await?;
+        }
+    }
+
+    handles::insert_user_channel(&pool, *id, channel_ids).await?;
+
+    Ok("Update Success")
 }
 
 /// **Add User**
@@ -481,17 +475,26 @@ async fn patch_channel(
     pool: web::Data<Pool<Sqlite>>,
     id: web::Path<i32>,
     data: web::Json<Channel>,
+    controllers: web::Data<Mutex<ChannelController>>,
     role: AuthDetails<Role>,
     user: web::ReqData<UserMeta>,
 ) -> Result<impl Responder, ServiceError> {
-    if handles::update_channel(&pool, *id, data.into_inner())
-        .await
-        .is_ok()
-    {
-        return Ok("Update Success");
-    };
+    let manager = controllers.lock().unwrap().get(*id).unwrap();
+    let mut data = data.into_inner();
 
-    Err(ServiceError::InternalServerError)
+    if !role.has_authority(&Role::GlobalAdmin) {
+        let channel = handles::select_channel(&pool, &id).await?;
+
+        data.hls_path = channel.hls_path;
+        data.playlist_path = channel.playlist_path;
+        data.storage_path = channel.storage_path;
+    }
+
+    handles::update_channel(&pool, *id, data).await?;
+    let new_config = get_config(&pool, *id).await?;
+    manager.update_config(new_config);
+
+    Ok("Update Success")
 }
 
 /// **Create new Channel**
@@ -596,7 +599,7 @@ async fn update_advanced_config(
     let manager = controllers.lock().unwrap().get(*id).unwrap();
 
     handles::update_advanced_configuration(&pool, *id, data.clone()).await?;
-    let new_config = PlayoutConfig::new(&pool, *id).await;
+    let new_config = get_config(&pool, *id).await?;
 
     manager.update_config(new_config);
 
@@ -652,7 +655,7 @@ async fn update_playout_config(
     let config_id = manager.config.lock().unwrap().general.id;
 
     handles::update_configuration(&pool, config_id, data.clone()).await?;
-    let new_config = PlayoutConfig::new(&pool, *id).await;
+    let new_config = get_config(&pool, *id).await?;
 
     manager.update_config(new_config);
 
@@ -1028,7 +1031,7 @@ pub async fn gen_playlist(
 ) -> Result<impl Responder, ServiceError> {
     let manager = controllers.lock().unwrap().get(params.0).unwrap();
     manager.config.lock().unwrap().general.generate = Some(vec![params.1.clone()]);
-    let storage_path = manager.config.lock().unwrap().global.storage_path.clone();
+    let storage_path = manager.config.lock().unwrap().channel.storage_path.clone();
 
     if let Some(obj) = data {
         if let Some(paths) = &obj.paths {
@@ -1270,7 +1273,7 @@ async fn get_file(
     let id: i32 = req.match_info().query("id").parse()?;
     let manager = controllers.lock().unwrap().get(id).unwrap();
     let config = manager.config.lock().unwrap();
-    let storage_path = config.global.storage_path.clone();
+    let storage_path = config.channel.storage_path.clone();
     let file_path = req.match_info().query("filename");
     let (path, _, _) = norm_abs_path(&storage_path, file_path)?;
     let file = actix_files::NamedFile::open(path)?;
@@ -1301,7 +1304,7 @@ async fn get_public(
     let absolute_path = if file_stem.ends_with(".ts") || file_stem.ends_with(".m3u8") {
         let manager = controllers.lock().unwrap().get(id).unwrap();
         let config = manager.config.lock().unwrap();
-        config.global.hls_path.join(public)
+        config.channel.hls_path.join(public)
     } else if public_path.is_absolute() {
         public_path.to_path_buf()
     } else {

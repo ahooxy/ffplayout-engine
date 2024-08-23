@@ -11,7 +11,7 @@ use sqlx::{Pool, Sqlite};
 use super::logging::MailQueue;
 use crate::db::{handles, models::Channel};
 use crate::player::controller::{ChannelController, ChannelManager};
-use crate::utils::{config::PlayoutConfig, errors::ServiceError};
+use crate::utils::{config::get_config, errors::ServiceError};
 
 async fn map_global_admins(conn: &Pool<Sqlite>) -> Result<(), ServiceError> {
     let channels = handles::select_related_channels(conn, None).await?;
@@ -61,9 +61,25 @@ pub async fn create_channel(
     queue: Arc<Mutex<Vec<Arc<Mutex<MailQueue>>>>>,
     target_channel: Channel,
 ) -> Result<Channel, ServiceError> {
+    let global = handles::select_global(conn).await?;
     let mut channel = handles::insert_channel(conn, target_channel).await?;
 
     channel.preview_url = preview_url(&channel.preview_url, channel.id);
+
+    if global.shared_storage {
+        channel.hls_path = Path::new(&channel.hls_path)
+            .join(channel.id.to_string())
+            .to_string_lossy()
+            .to_string();
+        channel.playlist_path = Path::new(&channel.playlist_path)
+            .join(channel.id.to_string())
+            .to_string_lossy()
+            .to_string();
+        channel.storage_path = Path::new(&channel.storage_path)
+            .join(channel.id.to_string())
+            .to_string_lossy()
+            .to_string();
+    }
 
     handles::update_channel(conn, channel.id, channel.clone()).await?;
 
@@ -72,7 +88,7 @@ pub async fn create_channel(
     handles::insert_advanced_configuration(conn, channel.id).await?;
     handles::insert_configuration(conn, channel.id, output_param).await?;
 
-    let config = PlayoutConfig::new(conn, channel.id).await;
+    let config = get_config(conn, channel.id).await?;
     let m_queue = Arc::new(Mutex::new(MailQueue::new(channel.id, config.mail.clone())));
     let manager = ChannelManager::new(Some(conn.clone()), channel.clone(), config);
 

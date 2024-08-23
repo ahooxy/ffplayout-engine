@@ -24,7 +24,7 @@ use path_clean::PathClean;
 use ffplayout::{
     api::{auth, routes::*},
     db::{
-        db_pool, handles,
+        db_drop, db_pool, handles,
         models::{init_globales, UserMeta},
     },
     player::{
@@ -263,7 +263,7 @@ async fn main() -> std::io::Result<()> {
                     exit(1);
                 };
             } else if ARGS.validate {
-                let mut playlist_path = config.global.playlist_path.clone();
+                let mut playlist_path = config.channel.playlist_path.clone();
                 let start_sec = config.playlist.start_sec.unwrap();
                 let date = get_date(false, start_sec, false);
 
@@ -289,7 +289,9 @@ async fn main() -> std::io::Result<()> {
                     playlist,
                     Arc::new(AtomicBool::new(false)),
                 );
-            } else {
+            } else if ARGS.drop_db {
+                db_drop().await;
+            } else if !ARGS.init {
                 error!("Run ffplayout with parameters! Run ffplayout -h for more information.");
             }
         }

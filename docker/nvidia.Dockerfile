@@ -1,6 +1,6 @@
 FROM nvidia/cuda:12.5.0-runtime-rockylinux9
 
-ARG FFPLAYOUT_VERSION=0.24.0-alpha3
+ARG FFPLAYOUT_VERSION=0.24.0-beta2
 ARG SHARED_STORAGE=false
 
 ENV DB=/db
@@ -25,7 +25,7 @@ RUN dnf clean all -y && \
 RUN dnf install -y which sqlite libstdc++-static libtool autoconf clang \
     cmake ninja-build cargo ragel meson git pkgconfig bzip2 \
     python3-devel gperf perl glibc-static binutils-devel \
-    nasm rsync
+    nasm rsync wget
 
 WORKDIR /tmp
 
@@ -204,7 +204,7 @@ COPY <<-EOT /run.sh
 #!/bin/sh
 
 if [ ! -f /db/ffplayout.db ]; then
-    ffplayout -u admin -p admin -m contact@example.com --storage-path "/tv-media" --playlist-path "/playlists" --hls-path "/hls" --log-path "/logging" --shared-storage
+    ffplayout -u admin -p admin -m contact@example.com --storage-root "/tv-media" --playlist-root "/playlists" --public-root "/public" --log-path "/logging" --shared-storage
 fi
 
 /usr/bin/ffplayout -l "0.0.0.0:8787"
