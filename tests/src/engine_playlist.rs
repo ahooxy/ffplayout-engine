@@ -33,7 +33,7 @@ async fn prepare_config() -> (PlayoutConfig, ChannelManager) {
     .await
     .unwrap();
 
-    let config = PlayoutConfig::new(&pool, 1).await;
+    let config = PlayoutConfig::new(&pool, 1).await.unwrap();
     let channel = handles::select_channel(&pool, &1).await.unwrap();
     let manager = ChannelManager::new(Some(pool), channel, config.clone());
 
@@ -49,6 +49,7 @@ fn timed_stop(sec: u64, manager: ChannelManager) {
 
     println!("Timed stop of process");
 
+    manager.channel.lock().unwrap().active = false;
     manager.stop_all();
 }
 

@@ -49,8 +49,7 @@ CREATE TABLE
         boxborderw TEXT NOT NULL,
         alpha TEXT NOT NULL,
         channel_id INTEGER NOT NULL DEFAULT 1,
-        FOREIGN KEY (channel_id) REFERENCES channels (id) ON UPDATE CASCADE ON DELETE CASCADE,
-        UNIQUE (name)
+        FOREIGN KEY (channel_id) REFERENCES channels (id) ON UPDATE CASCADE ON DELETE CASCADE
     );
 
 CREATE TABLE
@@ -189,7 +188,7 @@ INSERT INTO
 VALUES
     (
         'Channel 1',
-        'http://127.0.0.1:8787/live/1/stream.m3u8',
+        'http://127.0.0.1:8787/1/live/stream.m3u8',
         'jpg,jpeg,png',
         0
     );
