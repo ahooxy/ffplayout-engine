@@ -314,14 +314,11 @@ impl CurrentProgram {
             self.current_node =
                 handle_list_init(&self.config, node_clone, &self.manager, last_index);
 
-            if self.current_node.source.contains(
-                &self
-                    .config
-                    .channel
-                    .storage_path
-                    .to_string_lossy()
-                    .to_string(),
-            ) || self.current_node.source.contains("color=c=#121212")
+            if self
+                .current_node
+                .source
+                .contains(&self.config.channel.storage.to_string_lossy().to_string())
+                || self.current_node.source.contains("color=c=#121212")
             {
                 is_filler = true;
             }
@@ -539,7 +536,9 @@ fn timed_source(
         if config.general.stop_threshold > 0.0
             && shifted_delta.abs() > config.general.stop_threshold
         {
-            error!(target: Target::file_mail(), channel = id; "Clip begin out of sync for <yellow>{delta:.3}</> seconds.");
+            if manager.is_alive.load(Ordering::SeqCst) {
+                error!(target: Target::file_mail(), channel = id; "Clip begin out of sync for <yellow>{delta:.3}</> seconds.");
+            }
 
             new_node.cmd = None;
 
@@ -640,14 +639,14 @@ pub fn gen_source(
             .filter(|c| IMAGE_FORMAT.contains(&c.as_str()))
             .is_some()
         {
-            node.cmd = Some(loop_image(&node));
+            node.cmd = Some(loop_image(config, &node));
         } else {
             if node.seek > 0.0 && node.out > node.duration {
                 warn!(target: Target::file_mail(), channel = config.general.channel_id; "Clip loops and has seek value: duplicate clip to separate loop and seek.");
                 duplicate_for_seek_and_loop(&mut node, &manager.current_list);
             }
 
-            node.cmd = Some(seek_and_length(&mut node));
+            node.cmd = Some(seek_and_length(config, &mut node));
         }
     } else {
         trace!("clip index: {node_index} | last index: {last_index}");
@@ -694,7 +693,7 @@ pub fn gen_source(
             node.seek = 0.0;
             node.out = filler_media.out;
             node.duration = filler_media.duration;
-            node.cmd = Some(loop_filler(&node));
+            node.cmd = Some(loop_filler(config, &node));
             node.probe = filler_media.probe;
         } else {
             match MediaProbe::new(&config.storage.filler_path.to_string_lossy()) {
@@ -715,7 +714,7 @@ pub fn gen_source(
                             .clone()
                             .to_string_lossy()
                             .to_string();
-                        node.cmd = Some(loop_image(&node));
+                        node.cmd = Some(loop_image(config, &node));
                         node.probe = Some(probe);
                     } else if let Some(filler_duration) = probe
                         .clone()
@@ -739,7 +738,7 @@ pub fn gen_source(
                         node.seek = 0.0;
                         node.out = filler_out;
                         node.duration = filler_duration;
-                        node.cmd = Some(loop_filler(&node));
+                        node.cmd = Some(loop_filler(config, &node));
                         node.probe = Some(probe);
                     } else {
                         // Create colored placeholder.

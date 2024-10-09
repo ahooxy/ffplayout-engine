@@ -57,6 +57,7 @@ export default {
         play: 'Play',
         title: 'Title',
         duration: 'Duration',
+        total: 'Total',
         in: 'In',
         out: 'Out',
         ad: 'Ad',
@@ -93,7 +94,9 @@ export default {
         notExists: 'Storage not exist!',
         create: 'Create Folder',
         upload: 'Upload Files',
-        deleteTitle: 'Delete File/Folder',
+        delete: 'Delete',
+        file: 'File',
+        folder: 'Folder',
         deleteQuestion: 'Are you sure that you want to delete',
         preview: 'Preview',
         rename: 'Rename File',
@@ -110,6 +113,7 @@ export default {
         folderError: 'Folder create error',
         uploadError: 'Upload error',
         fileExists: 'File exists already!',
+        recursive: 'Recursive',
     },
     message: {
         savePreset: 'Save Preset',
@@ -137,6 +141,7 @@ export default {
     },
     log: {
         download: 'Download log file',
+        reload: 'Reload',
     },
     advanced: {
         title: 'Advanced Configuration',
@@ -199,7 +204,7 @@ export default {
         updatePlayoutFailed: 'Update playout config failed!',
         forbiddenPlaylistPath: 'Access forbidden: Playlist folder cannot be opened.',
         noPlayoutConfig: 'No playout config found!',
-        hlsPath: 'HLS Path',
+        publicPath: 'Public (HLS) Path',
         playlistPath: 'Playlist Path',
         storagePath: 'Storage Path',
         sharedStorage: 'Shared storage is enabled, use the same storage root for all channels!',

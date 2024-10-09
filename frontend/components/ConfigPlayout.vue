@@ -15,7 +15,13 @@
                         class="form-control w-full"
                         :class="[typeof prop === 'boolean' && 'flex-row', name.toString() !== 'help_text' && 'mt-2']"
                     >
-                        <template v-if="name.toString() !== 'startInSec' && name.toString() !== 'lengthInSec' && !(name.toString() === 'path' && key.toString() === 'storage')" >
+                        <template
+                            v-if="
+                                name.toString() !== 'startInSec' &&
+                                name.toString() !== 'lengthInSec' &&
+                                !(name.toString() === 'path' && key.toString() === 'storage')
+                            "
+                        >
                             <div v-if="name.toString() !== 'help_text'" class="label">
                                 <span class="label-text !text-md font-bold">{{ name }}</span>
                             </div>
@@ -87,6 +93,7 @@
 </template>
 
 <script setup lang="ts">
+const config = useRuntimeConfig()
 const { t } = useI18n()
 
 const authStore = useAuth()
@@ -170,19 +177,23 @@ async function onSubmitPlayout() {
     if (update.status === 200) {
         indexStore.msgAlert('success', t('config.updatePlayoutSuccess'), 2)
 
-        const channel = configStore.channels[configStore.id].id
+        const channel = configStore.channels[configStore.i].id
 
         await $fetch(`/api/control/${channel}/process/`, {
             method: 'POST',
             headers: { ...configStore.contentType, ...authStore.authHeader },
             body: JSON.stringify({ command: 'status' }),
-        }).then(async (response: any) => {
-            if (response === 'active') {
-                showModal.value = true
-            }
-
-            await configStore.getPlayoutConfig()
         })
+            .then(async (response: any) => {
+                if (response === 'active') {
+                    showModal.value = true
+                }
+
+                await configStore.getPlayoutConfig()
+            })
+            .catch((e) => {
+                indexStore.msgAlert('error', e.data, 3)
+            })
     } else {
         indexStore.msgAlert('error', t('config.updatePlayoutFailed'), 2)
     }
@@ -190,12 +201,14 @@ async function onSubmitPlayout() {
 
 async function restart(res: boolean) {
     if (res) {
-        const channel = configStore.channels[configStore.id].id
+        const channel = configStore.channels[configStore.i].id
 
         await $fetch(`/api/control/${channel}/process/`, {
             method: 'POST',
             headers: { ...configStore.contentType, ...authStore.authHeader },
             body: JSON.stringify({ command: 'restart' }),
+        }).catch((e) => {
+            indexStore.msgAlert('error', e.data, 3)
         })
     }
 

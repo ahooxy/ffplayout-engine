@@ -1,9 +1,9 @@
 <template>
     <div
-        class="z-50 fixed top-0 bottom-0 w-full h-full left-0 right-0 flex justify-center items-center bg-black/30 overflow-y-auto"
+        class="z-50 fixed inset-0 flex justify-center bg-black/30 overflow-auto py-5"
     >
         <div
-            class="relative flex flex-col bg-base-100 w-[800px] min-w-[300px] max-w-[90vw] h-[680px] rounded-md p-5 shadow-xl"
+            class="relative flex flex-col bg-base-100 w-[800px] min-w-[300px] max-w-[90vw] h-[680px] my-auto rounded-md p-5 shadow-xl"
         >
             <div class="font-bold text-lg">{{ t('player.generateProgram') }}</div>
 
@@ -347,7 +347,7 @@ function addFolderToTemplate(event: any, item: TemplateItem) {
 
     event.item.remove()
 
-    const storagePath = configStore.channels[configStore.id].storage_path
+    const storagePath = configStore.channels[configStore.i].storage
     const navPath = mediaStore.folderCrumbs[mediaStore.folderCrumbs.length - 1].path
     const sourcePath = `${storagePath}/${navPath}/${mediaStore.folderList.folders[o].name}`.replace(/\/[/]+/g, '/')
 
@@ -402,7 +402,7 @@ async function generatePlaylist() {
         }
     }
 
-    await $fetch(`/api/playlist/${configStore.channels[configStore.id].id}/generate/${playlistStore.listDate}`, {
+    await $fetch(`/api/playlist/${configStore.channels[configStore.i].id}/generate/${playlistStore.listDate}`, {
         method: 'POST',
         headers: { ...configStore.contentType, ...authStore.authHeader },
         body,

@@ -6,6 +6,7 @@ use std::{
 
 use chrono::NaiveTime;
 use flexi_logger::Level;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use shlex::split;
 use sqlx::{Pool, Sqlite};
@@ -42,12 +43,13 @@ pub const FFMPEG_IGNORE_ERRORS: [&str; 13] = [
     "frame size not set",
 ];
 
-pub const FFMPEG_UNRECOVERABLE_ERRORS: [&str; 5] = [
+pub const FFMPEG_UNRECOVERABLE_ERRORS: [&str; 6] = [
     "Address already in use",
     "Invalid argument",
     "Numerical result",
     "Error initializing complex filters",
     "Error while decoding stream #0:0: Invalid data found when processing input",
+    "Unrecognized option",
 ];
 
 #[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
@@ -176,21 +178,21 @@ pub struct PlayoutConfig {
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Channel {
-    pub logging_path: PathBuf,
-    pub hls_path: PathBuf,
-    pub playlist_path: PathBuf,
-    pub storage_path: PathBuf,
-    pub shared_storage: bool,
+    pub logs: PathBuf,
+    pub public: PathBuf,
+    pub playlists: PathBuf,
+    pub storage: PathBuf,
+    pub shared: bool,
 }
 
 impl Channel {
     pub fn new(config: &models::GlobalSettings, channel: models::Channel) -> Self {
         Self {
-            logging_path: PathBuf::from(config.logging_path.clone()),
-            hls_path: PathBuf::from(channel.hls_path.clone()),
-            playlist_path: PathBuf::from(channel.playlist_path.clone()),
-            storage_path: PathBuf::from(channel.storage_path.clone()),
-            shared_storage: config.shared_storage,
+            logs: PathBuf::from(config.logs.clone()),
+            public: PathBuf::from(channel.public.clone()),
+            playlists: PathBuf::from(channel.playlists.clone()),
+            storage: PathBuf::from(channel.storage.clone()),
+            shared: config.shared,
         }
     }
 }
@@ -238,9 +240,13 @@ impl General {
 pub struct Mail {
     pub help_text: String,
     pub subject: String,
+    #[serde(skip_serializing, skip_deserializing)]
     pub smtp_server: String,
+    #[serde(skip_serializing, skip_deserializing)]
     pub starttls: bool,
+    #[serde(skip_serializing, skip_deserializing)]
     pub sender_addr: String,
+    #[serde(skip_serializing, skip_deserializing)]
     pub sender_pass: String,
     pub recipient: String,
     pub mail_level: Level,
@@ -248,14 +254,14 @@ pub struct Mail {
 }
 
 impl Mail {
-    fn new(config: &models::Configuration) -> Self {
+    fn new(global: &models::GlobalSettings, config: &models::Configuration) -> Self {
         Self {
             help_text: config.mail_help.clone(),
             subject: config.mail_subject.clone(),
-            smtp_server: config.mail_smtp.clone(),
-            starttls: config.mail_starttls,
-            sender_addr: config.mail_addr.clone(),
-            sender_pass: config.mail_pass.clone(),
+            smtp_server: global.mail_smtp.clone(),
+            starttls: global.mail_starttls,
+            sender_addr: global.mail_user.clone(),
+            sender_pass: global.mail_password.clone(),
             recipient: config.mail_recipient.clone(),
             mail_level: string_to_log_level(config.mail_level.clone()),
             interval: config.mail_interval,
@@ -328,6 +334,10 @@ pub struct Processing {
     pub audio_channels: u8,
     pub volume: f64,
     pub custom_filter: String,
+    #[serde(default)]
+    pub vtt_enable: bool,
+    #[serde(default)]
+    pub vtt_dummy: Option<String>,
     #[serde(skip_serializing, skip_deserializing)]
     pub cmd: Option<Vec<String>>,
 }
@@ -355,6 +365,8 @@ impl Processing {
             audio_channels: config.processing_audio_channels,
             volume: config.processing_volume,
             custom_filter: config.processing_filter.clone(),
+            vtt_enable: config.processing_vtt_enable,
+            vtt_dummy: config.processing_vtt_dummy.clone(),
             cmd: None,
         }
     }
@@ -452,6 +464,7 @@ pub struct Text {
     pub zmq_stream_socket: Option<String>,
     #[serde(skip_serializing, skip_deserializing)]
     pub zmq_server_socket: Option<String>,
+    #[serde(alias = "fontfile")]
     pub font: String,
     #[serde(skip_serializing, skip_deserializing)]
     pub font_path: String,
@@ -562,9 +575,7 @@ fn default_track_index() -> i32 {
 
 impl PlayoutConfig {
     pub async fn new(pool: &Pool<Sqlite>, channel_id: i32) -> Result<Self, ServiceError> {
-        let global = handles::select_global(pool)
-            .await
-            .expect("Can't read globals");
+        let global = handles::select_global(pool).await?;
         let channel = handles::select_channel(pool, &channel_id).await?;
         let config = handles::select_configuration(pool, channel_id).await?;
         let adv_config = handles::select_advanced_configuration(pool, channel_id).await?;
@@ -572,7 +583,7 @@ impl PlayoutConfig {
         let channel = Channel::new(&global, channel);
         let advanced = AdvancedConfig::new(adv_config);
         let general = General::new(&config);
-        let mail = Mail::new(&config);
+        let mail = Mail::new(&global, &config);
         let logging = Logging::new(&config);
         let mut processing = Processing::new(&config);
         let mut ingest = Ingest::new(&config);
@@ -581,27 +592,23 @@ impl PlayoutConfig {
         let task = Task::new(&config);
         let mut output = Output::new(&config);
 
-        if !channel.storage_path.is_dir() {
-            tokio::fs::create_dir_all(&channel.storage_path)
+        if !channel.storage.is_dir() {
+            tokio::fs::create_dir_all(&channel.storage)
                 .await
-                .unwrap_or_else(|_| {
-                    panic!("Can't create storage folder: {:#?}", channel.storage_path)
-                });
+                .unwrap_or_else(|_| panic!("Can't create storage folder: {:#?}", channel.storage));
         }
 
-        let mut storage =
-            Storage::new(&config, channel.storage_path.clone(), global.shared_storage);
+        let mut storage = Storage::new(&config, channel.storage.clone(), global.shared);
 
-        if !channel.playlist_path.is_dir() {
-            tokio::fs::create_dir_all(&channel.playlist_path).await?;
+        if !channel.playlists.is_dir() {
+            tokio::fs::create_dir_all(&channel.playlists).await?;
         }
 
-        if !channel.logging_path.is_dir() {
-            tokio::fs::create_dir_all(&channel.logging_path).await?;
+        if !channel.logs.is_dir() {
+            tokio::fs::create_dir_all(&channel.logs).await?;
         }
 
-        let (filler_path, _, filler) =
-            norm_abs_path(&channel.storage_path, &config.storage_filler)?;
+        let (filler_path, _, filler) = norm_abs_path(&channel.storage, &config.storage_filler)?;
 
         storage.filler = filler;
         storage.filler_path = filler_path;
@@ -614,7 +621,7 @@ impl PlayoutConfig {
             playlist.length_sec = Some(86400.0);
         }
 
-        let (logo_path, _, logo) = norm_abs_path(&channel.storage_path, &processing.logo)?;
+        let (logo_path, _, logo) = norm_abs_path(&channel.storage, &processing.logo)?;
 
         if processing.add_logo && !logo_path.is_file() {
             processing.add_logo = false;
@@ -655,7 +662,9 @@ impl PlayoutConfig {
                 "-maxrate",
                 &bitrate,
                 "-bufsize",
-                &buff_size
+                &buff_size,
+                "-mpegts_flags",
+                "initial_discontinuity"
             ]);
         }
 
@@ -698,15 +707,57 @@ impl PlayoutConfig {
                 cmd.remove(i);
             }
 
+            let is_tee_muxer = cmd.contains(&"tee".to_string());
+
             for item in cmd.iter_mut() {
                 if item.ends_with(".ts") || (item.ends_with(".m3u8") && item != "master.m3u8") {
-                    if let Ok((hls_path, _, _)) = norm_abs_path(&channel.hls_path, item) {
-                        let parent = hls_path.parent().ok_or("HLS parent path")?;
+                    if is_tee_muxer {
+                        // Processes the `item` string to replace `.ts` and `.m3u8` filenames with their absolute paths.
+                        // Ensures that the corresponding directories exist.
+                        //
+                        // - Uses regular expressions to identify `.ts` and `.m3u8` filenames within the `item` string.
+                        // - For each identified filename, normalizes its path and checks if the parent directory exists.
+                        // - Creates the parent directory if it does not exist.
+                        // - Replaces the original filename in the `item` string with the normalized absolute path.
+                        let re_ts = Regex::new(r"filename=(\S+?\.ts)").unwrap();
+                        let re_m3 = Regex::new(r"\](\S+?\.m3u8)").unwrap();
+
+                        for s in item.clone().split('|') {
+                            if let Some(ts) = re_ts.captures(s).and_then(|p| p.get(1)) {
+                                let (segment_path, _, _) =
+                                    norm_abs_path(&channel.public, ts.as_str())?;
+                                let parent = segment_path.parent().ok_or("HLS parent path")?;
+
+                                if !parent.is_dir() {
+                                    fs::create_dir_all(parent).await?;
+                                }
+
+                                item.clone_from(
+                                    &item.replace(ts.as_str(), &segment_path.to_string_lossy()),
+                                );
+                            }
+
+                            if let Some(m3) = re_m3.captures(s).and_then(|p| p.get(1)) {
+                                let (m3u8_path, _, _) =
+                                    norm_abs_path(&channel.public, m3.as_str())?;
+                                let parent = m3u8_path.parent().ok_or("HLS parent path")?;
+
+                                if !parent.is_dir() {
+                                    fs::create_dir_all(parent).await?;
+                                }
+
+                                item.clone_from(
+                                    &item.replace(m3.as_str(), &m3u8_path.to_string_lossy()),
+                                );
+                            }
+                        }
+                    } else if let Ok((public, _, _)) = norm_abs_path(&channel.public, item) {
+                        let parent = public.parent().ok_or("HLS parent path")?;
 
                         if !parent.is_dir() {
                             fs::create_dir_all(parent).await?;
                         }
-                        item.clone_from(&hls_path.to_string_lossy().to_string());
+                        item.clone_from(&public.to_string_lossy().to_string());
                     };
                 }
             }
@@ -727,7 +778,7 @@ impl PlayoutConfig {
             text.node_pos = None;
         }
 
-        let (font_path, _, font) = norm_abs_path(&channel.storage_path, &text.font)?;
+        let (font_path, _, font) = norm_abs_path(&channel.storage, &text.font)?;
         text.font = font;
         text.font_path = font_path.to_string_lossy().to_string();
 
@@ -844,12 +895,12 @@ pub async fn get_config(
         config.storage.paths = paths;
     }
 
-    if let Some(playlist) = args.playlist {
-        config.channel.playlist_path = playlist;
+    if let Some(playlist) = args.playlists {
+        config.channel.playlists = PathBuf::from(&playlist);
     }
 
     if let Some(folder) = args.folder {
-        config.channel.storage_path = folder;
+        config.channel.storage = folder;
         config.processing.mode = ProcessMode::Folder;
     }
 
@@ -868,14 +919,30 @@ pub async fn get_config(
         }
     }
 
-    if args.shared_storage {
-        // config.channel.shared_storage could be true already,
-        // so should not be overridden with false when args.shared_storage is not set
-        config.channel.shared_storage = args.shared_storage
+    if args.shared {
+        // config.channel.shared could be true already,
+        // so should not be overridden with false when args.shared is not set
+        config.channel.shared = true
     }
 
     if let Some(volume) = args.volume {
         config.processing.volume = volume;
+    }
+
+    if let Some(mail_smtp) = args.mail_smtp {
+        config.mail.smtp_server = mail_smtp;
+    }
+
+    if let Some(mail_user) = args.mail_user {
+        config.mail.sender_addr = mail_user;
+    }
+
+    if let Some(mail_password) = args.mail_password {
+        config.mail.sender_pass = mail_password;
+    }
+
+    if args.mail_starttls {
+        config.mail.starttls = true;
     }
 
     Ok(config)

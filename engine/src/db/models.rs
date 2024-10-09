@@ -12,15 +12,19 @@ use sqlx::{sqlite::SqliteRow, FromRow, Pool, Row, Sqlite};
 use crate::db::handles;
 use crate::utils::config::PlayoutConfig;
 
-#[derive(Clone, Debug, Deserialize, Serialize, sqlx::FromRow)]
+#[derive(Clone, Default, Debug, Deserialize, Serialize, sqlx::FromRow)]
 pub struct GlobalSettings {
     pub id: i32,
     pub secret: Option<String>,
-    pub logging_path: String,
-    pub playlist_root: String,
-    pub public_root: String,
-    pub storage_root: String,
-    pub shared_storage: bool,
+    pub logs: String,
+    pub playlists: String,
+    pub public: String,
+    pub storage: String,
+    pub shared: bool,
+    pub mail_smtp: String,
+    pub mail_user: String,
+    pub mail_password: String,
+    pub mail_starttls: bool,
 }
 
 impl GlobalSettings {
@@ -32,11 +36,15 @@ impl GlobalSettings {
             Err(_) => GlobalSettings {
                 id: 0,
                 secret: None,
-                logging_path: String::new(),
-                playlist_root: String::new(),
-                public_root: String::new(),
-                storage_root: String::new(),
-                shared_storage: false,
+                logs: String::new(),
+                playlists: String::new(),
+                public: String::new(),
+                storage: String::new(),
+                shared: false,
+                mail_smtp: String::new(),
+                mail_user: String::new(),
+                mail_password: String::new(),
+                mail_starttls: false,
             },
         }
     }
@@ -61,9 +69,9 @@ pub struct Channel {
     pub preview_url: String,
     pub extra_extensions: String,
     pub active: bool,
-    pub hls_path: String,
-    pub playlist_path: String,
-    pub storage_path: String,
+    pub public: String,
+    pub playlists: String,
+    pub storage: String,
     pub last_date: Option<String>,
     pub time_shift: f64,
 
@@ -264,11 +272,7 @@ pub struct Configuration {
 
     pub mail_help: String,
     pub mail_subject: String,
-    pub mail_smtp: String,
-    pub mail_addr: String,
-    pub mail_pass: String,
     pub mail_recipient: String,
-    pub mail_starttls: bool,
     pub mail_level: String,
     pub mail_interval: i64,
 
@@ -302,6 +306,10 @@ pub struct Configuration {
     pub processing_volume: f64,
     #[serde(default)]
     pub processing_filter: String,
+    #[serde(default)]
+    pub processing_vtt_enable: bool,
+    #[serde(default)]
+    pub processing_vtt_dummy: Option<String>,
 
     pub ingest_help: String,
     pub ingest_enable: bool,
@@ -344,10 +352,6 @@ impl Configuration {
             general_stop_threshold: config.general.stop_threshold,
             mail_help: config.mail.help_text,
             mail_subject: config.mail.subject,
-            mail_smtp: config.mail.smtp_server,
-            mail_starttls: config.mail.starttls,
-            mail_addr: config.mail.sender_addr,
-            mail_pass: config.mail.sender_pass,
             mail_recipient: config.mail.recipient,
             mail_level: config.mail.mail_level.to_string(),
             mail_interval: config.mail.interval,
@@ -375,6 +379,8 @@ impl Configuration {
             processing_audio_channels: config.processing.audio_channels,
             processing_volume: config.processing.volume,
             processing_filter: config.processing.custom_filter,
+            processing_vtt_enable: config.processing.vtt_enable,
+            processing_vtt_dummy: config.processing.vtt_dummy,
             ingest_help: config.ingest.help_text,
             ingest_enable: config.ingest.enable,
             ingest_param: config.ingest.input_param,

@@ -57,6 +57,7 @@ export default {
         play: 'Проиграть',
         title: 'Название файла',
         duration: 'Длительность',
+        total: 'Всего',
         in: 'Начало',
         out: 'Конец',
         ad: 'Реклама',
@@ -93,7 +94,9 @@ export default {
         notExists: 'Папки не существует!',
         create: 'Сделать папку',
         upload: 'Загрузить файлы',
-        deleteTitle: 'Удалить Файл/Папку',
+        delete: 'Удалить',
+        file: 'Файл',
+        folder: 'Папку',
         deleteQuestion: 'Вы уверены что хотите это удалить',
         preview: 'Просмотр',
         rename: 'Переименовать файл',
@@ -110,6 +113,7 @@ export default {
         folderError: 'Ошибка Создания папки',
         uploadError: 'Ошибка Загрузки',
         fileExists: 'Файл уже имеется!',
+        recursive: 'Рекурсивный',
     },
     message: {
         savePreset: 'Сохранить шаблон',
@@ -137,6 +141,7 @@ export default {
     },
     log: {
         download: 'Скачать лог файл',
+        reload: 'Перезагрузка',
     },
     advanced: {
         title: 'Advanced Configuration',
@@ -199,7 +204,7 @@ export default {
         updatePlayoutFailed: 'Обновление конфигурации воспроизведения не удалось!',
         forbiddenPlaylistPath: 'Доступ запрещен: Папка плейлиста не может быть открыта.',
         noPlayoutConfig: 'Конфигурация воспроизведения не найдена!',
-        hlsPath: 'HLS Path',
+        publicPath: 'Public (HLS) Path',
         playlistPath: 'Playlist Path',
         storagePath: 'Storage Path',
         sharedStorage: 'Общее хранилище включено, используйте один и тот же корень хранилища для всех каналов!',

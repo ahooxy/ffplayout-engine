@@ -57,6 +57,7 @@ export default {
         play: 'Abspielen',
         title: 'Titel',
         duration: 'Dauer',
+        total: 'Gesamt',
         in: 'Eingang',
         out: 'Ausgang',
         ad: 'Werbung',
@@ -93,7 +94,9 @@ export default {
         notExists: 'Speicher existiert nicht!',
         create: 'Ordner erstellen',
         upload: 'Dateien hochladen',
-        deleteTitle: 'Datei/Ordner löschen',
+        delete: 'Lösche',
+        file: 'Datei',
+        folder: 'Ordner',
         deleteQuestion: 'Sind Sie sicher, dass Sie löschen möchten',
         preview: 'Vorschau',
         rename: 'Datei umbenennen',
@@ -110,6 +113,7 @@ export default {
         folderError: 'Fehler beim Erstellen des Ordners',
         uploadError: 'Fehler beim Hochladen',
         fileExists: 'Datei existiert bereits!',
+        recursive: 'Rekursiv',
     },
     message: {
         savePreset: 'Voreinstellung speichern',
@@ -137,6 +141,7 @@ export default {
     },
     log: {
         download: 'Protokoll herunterladen',
+        reload: 'Neu laden',
     },
     advanced: {
         title: 'Advanced Configuration',
@@ -200,7 +205,7 @@ export default {
         updatePlayoutFailed: 'Update playout config fehlgeschlagen!',
         forbiddenPlaylistPath: 'Zugriff untersagt: Playlist-Ordner kann nicht geöffnet werden.',
         noPlayoutConfig: 'Keine Playout-Konfiguration gefunden!',
-        hlsPath: 'HLS-Pfad',
+        publicPath: 'Public (HLS) Pfad',
         playlistPath: 'Wiedergabelistenpfad',
         storagePath: 'Speicherpfad',
         sharedStorage: 'Gemeinsamer Speicher ist aktiviert, verwende denselben Speicherstamm für alle Kanäle!',

@@ -36,7 +36,8 @@ pub async fn db_migrate(conn: &Pool<Sqlite>) -> Result<(), Box<dyn std::error::E
 }
 
 pub async fn select_global(conn: &Pool<Sqlite>) -> Result<GlobalSettings, sqlx::Error> {
-    let query = "SELECT id, secret, logging_path, playlist_root, public_root, storage_root, shared_storage FROM global WHERE id = 1";
+    let query =
+        "SELECT id, secret, logs, playlists, public, storage, shared, mail_smtp, mail_user, mail_password, mail_starttls FROM global WHERE id = 1";
 
     sqlx::query_as(query).fetch_one(conn).await
 }
@@ -45,15 +46,21 @@ pub async fn update_global(
     conn: &Pool<Sqlite>,
     global: GlobalSettings,
 ) -> Result<SqliteQueryResult, sqlx::Error> {
-    let query = "UPDATE global SET logging_path = $2, playlist_root = $3, public_root = $4, storage_root = $5, shared_storage = $6 WHERE id = 1";
+    let query =
+        "UPDATE global SET logs = $2, playlists = $3, public = $4, storage = $5, shared = $6,
+            mail_smtp = $7, mail_user = $8, mail_password = $9, mail_starttls = $10  WHERE id = 1";
 
     sqlx::query(query)
         .bind(global.id)
-        .bind(global.logging_path)
-        .bind(global.playlist_root)
-        .bind(global.public_root)
-        .bind(global.storage_root)
-        .bind(global.shared_storage)
+        .bind(global.logs)
+        .bind(global.playlists)
+        .bind(global.public)
+        .bind(global.storage)
+        .bind(global.shared)
+        .bind(global.mail_smtp)
+        .bind(global.mail_user)
+        .bind(global.mail_password)
+        .bind(global.mail_starttls)
         .execute(conn)
         .await
 }
@@ -73,7 +80,7 @@ pub async fn select_related_channels(
 ) -> Result<Vec<Channel>, sqlx::Error> {
     let query = match user_id {
         Some(id) => format!(
-            "SELECT c.id, c.name, c.preview_url, c.extra_extensions, c.active, c.hls_path, c.playlist_path, c.storage_path, c.last_date, c.time_shift FROM channels c
+            "SELECT c.id, c.name, c.preview_url, c.extra_extensions, c.active, c.public, c.playlists, c.storage, c.last_date, c.time_shift FROM channels c
                 left join user_channels uc on uc.channel_id = c.id
                 left join user u on u.id = uc.user_id
              WHERE u.id = {id} ORDER BY c.id ASC;"
@@ -110,16 +117,16 @@ pub async fn update_channel(
     channel: Channel,
 ) -> Result<SqliteQueryResult, sqlx::Error> {
     let query =
-        "UPDATE channels SET name = $2, preview_url = $3, extra_extensions = $4, hls_path = $5, playlist_path = $6, storage_path = $7 WHERE id = $1";
+        "UPDATE channels SET name = $2, preview_url = $3, extra_extensions = $4, public = $5, playlists = $6, storage = $7 WHERE id = $1";
 
     sqlx::query(query)
         .bind(id)
         .bind(channel.name)
         .bind(channel.preview_url)
         .bind(channel.extra_extensions)
-        .bind(channel.hls_path)
-        .bind(channel.playlist_path)
-        .bind(channel.storage_path)
+        .bind(channel.public)
+        .bind(channel.playlists)
+        .bind(channel.storage)
         .execute(conn)
         .await
 }
@@ -151,14 +158,14 @@ pub async fn update_player(
 }
 
 pub async fn insert_channel(conn: &Pool<Sqlite>, channel: Channel) -> Result<Channel, sqlx::Error> {
-    let query = "INSERT INTO channels (name, preview_url, extra_extensions, hls_path, playlist_path, storage_path) VALUES($1, $2, $3, $4, $5, $6)";
+    let query = "INSERT INTO channels (name, preview_url, extra_extensions, public, playlists, storage) VALUES($1, $2, $3, $4, $5, $6)";
     let result = sqlx::query(query)
         .bind(channel.name)
         .bind(channel.preview_url)
         .bind(channel.extra_extensions)
-        .bind(channel.hls_path)
-        .bind(channel.playlist_path)
-        .bind(channel.storage_path)
+        .bind(channel.public)
+        .bind(channel.playlists)
+        .bind(channel.storage)
         .execute(conn)
         .await?;
 
@@ -211,17 +218,13 @@ pub async fn update_configuration(
     id: i32,
     config: PlayoutConfig,
 ) -> Result<SqliteQueryResult, sqlx::Error> {
-    let query = "UPDATE configurations SET general_stop_threshold = $2, mail_subject = $3, mail_smtp = $4, mail_addr = $5, mail_pass = $6, mail_recipient = $7, mail_starttls = $8, mail_level = $9, mail_interval = $10, logging_ffmpeg_level = $11, logging_ingest_level = $12, logging_detect_silence = $13, logging_ignore = $14, processing_mode = $15, processing_audio_only = $16, processing_copy_audio = $17, processing_copy_video = $18, processing_width = $19, processing_height = $20, processing_aspect = $21, processing_fps = $22, processing_add_logo = $23, processing_logo = $24, processing_logo_scale = $25, processing_logo_opacity = $26, processing_logo_position = $27, processing_audio_tracks = $28, processing_audio_track_index = $29, processing_audio_channels = $30, processing_volume = $31, processing_filter = $32, ingest_enable = $33, ingest_param = $34, ingest_filter = $35, playlist_day_start = $36, playlist_length = $37, playlist_infinit = $38, storage_filler = $39, storage_extensions = $40, storage_shuffle = $41, text_add = $42, text_from_filename = $43, text_font = $44, text_style = $45, text_regex = $46, task_enable = $47, task_path = $48, output_mode = $49, output_param = $50 WHERE id = $1";
+    let query = "UPDATE configurations SET general_stop_threshold = $2, mail_subject = $3, mail_recipient = $4, mail_level = $5, mail_interval = $6, logging_ffmpeg_level = $7, logging_ingest_level = $8, logging_detect_silence = $9, logging_ignore = $10, processing_mode = $11, processing_audio_only = $12, processing_copy_audio = $13, processing_copy_video = $14, processing_width = $15, processing_height = $16, processing_aspect = $17, processing_fps = $18, processing_add_logo = $19, processing_logo = $20, processing_logo_scale = $21, processing_logo_opacity = $22, processing_logo_position = $23, processing_audio_tracks = $24, processing_audio_track_index = $25, processing_audio_channels = $26, processing_volume = $27, processing_filter = $28, processing_vtt_enable = $29, processing_vtt_dummy = $30, ingest_enable = $31, ingest_param = $32, ingest_filter = $33, playlist_day_start = $34, playlist_length = $35, playlist_infinit = $36, storage_filler = $37, storage_extensions = $38, storage_shuffle = $39, text_add = $40, text_from_filename = $41, text_font = $42, text_style = $43, text_regex = $44, task_enable = $45, task_path = $46, output_mode = $47, output_param = $48 WHERE id = $1";
 
     sqlx::query(query)
         .bind(id)
         .bind(config.general.stop_threshold)
         .bind(config.mail.subject)
-        .bind(config.mail.smtp_server)
-        .bind(config.mail.sender_addr)
-        .bind(config.mail.sender_pass)
         .bind(config.mail.recipient)
-        .bind(config.mail.starttls)
         .bind(config.mail.mail_level.as_str())
         .bind(config.mail.interval)
         .bind(config.logging.ffmpeg_level)
@@ -246,6 +249,8 @@ pub async fn update_configuration(
         .bind(config.processing.audio_channels)
         .bind(config.processing.volume)
         .bind(config.processing.custom_filter)
+        .bind(config.processing.vtt_enable)
+        .bind(config.processing.vtt_dummy)
         .bind(config.ingest.enable)
         .bind(config.ingest.input_param)
         .bind(config.ingest.custom_filter)
@@ -394,6 +399,39 @@ pub async fn insert_user(conn: &Pool<Sqlite>, user: User) -> Result<(), sqlx::Er
     Ok(())
 }
 
+pub async fn insert_or_update_user(conn: &Pool<Sqlite>, user: User) -> Result<(), sqlx::Error> {
+    let password_hash = task::spawn_blocking(move || {
+        let salt = SaltString::generate(&mut OsRng);
+        let hash = Argon2::default()
+            .hash_password(user.password.clone().as_bytes(), &salt)
+            .unwrap();
+
+        hash.to_string()
+    })
+    .await
+    .unwrap();
+
+    let query = "INSERT INTO user (mail, username, password, role_id) VALUES($1, $2, $3, $4)
+            ON CONFLICT(username) DO UPDATE SET
+                mail = excluded.mail, username = excluded.username, password = excluded.password, role_id = excluded.role_id
+        RETURNING id";
+
+    let user_id: i32 = sqlx::query(query)
+        .bind(user.mail)
+        .bind(user.username)
+        .bind(password_hash)
+        .bind(user.role_id)
+        .fetch_one(conn)
+        .await?
+        .get("id");
+
+    if let Some(channel_ids) = user.channel_ids {
+        insert_user_channel(conn, user_id, channel_ids).await?;
+    }
+
+    Ok(())
+}
+
 pub async fn update_user(
     conn: &Pool<Sqlite>,
     id: i32,
@@ -490,7 +528,7 @@ pub async fn new_channel_presets(
     channel_id: i32,
 ) -> Result<SqliteQueryResult, sqlx::Error> {
     let query = "INSERT INTO presets (name, text, x, y, fontsize, line_spacing, fontcolor, box, boxcolor, boxborderw, alpha, channel_id)
-        VALUES ('Default', 'Wellcome to ffplayout messenger!', '(w-text_w)/2', '(h-text_h)/2', '24', '4', '#ffffff@0xff', '0', '#000000@0x80', '4', '1.0', $1),
+        VALUES ('Default', 'Welcome to ffplayout messenger!', '(w-text_w)/2', '(h-text_h)/2', '24', '4', '#ffffff@0xff', '0', '#000000@0x80', '4', '1.0', $1),
         ('Empty Text', '', '0', '0', '24', '4', '#000000', '0', '#000000', '0', '0', $1),
         ('Bottom Text fade in', 'The upcoming event will be delayed by a few minutes.', '(w-text_w)/2', '(h-line_h)*0.9', '24', '4', '#ffffff', '1', '#000000@0x80', '4', 'ifnot(ld(1),st(1,t));if(lt(t,ld(1)+1),0,if(lt(t,ld(1)+2),(t-(ld(1)+1))/1,if(lt(t,ld(1)+8),1,if(lt(t,ld(1)+9),(1-(t-(ld(1)+8)))/1,0))))', $1),
         ('Scrolling Text', 'We have a very important announcement to make.', 'ifnot(ld(1),st(1,t));if(lt(t,ld(1)+1),w+4,w-w/12*mod(t-ld(1),12*(w+tw)/w))', '(h-line_h)*0.9', '24', '4', '#ffffff', '1', '#000000@0x80', '4', '1.0', $1);";

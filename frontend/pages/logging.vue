@@ -25,6 +25,9 @@
                     :ui="{ input: 'join-item input !input-sm !input-bordered !w-[170px] text-right !pe-3' }"
                     required
                 />
+                <button class="btn btn-sm btn-primary join-item" :title="t('log.reload')" @click="getLog()">
+                    <i class="bi-arrow-repeat" />
+                </button>
                 <button class="btn btn-sm btn-primary join-item" :title="t('log.download')" @click="downloadLog">
                     <i class="bi-download" />
                 </button>
@@ -51,7 +54,7 @@ useHead({
     title: `${t('button.logging')} | ffplayout`,
 })
 
-const { id } = storeToRefs(useConfig())
+const { i } = storeToRefs(useConfig())
 
 const { $dayjs } = useNuxtApp()
 const authStore = useAuth()
@@ -80,7 +83,7 @@ onMounted(async () => {
     await getLog()
 })
 
-watch([listDate, id], () => {
+watch([listDate, i], () => {
     getLog()
 })
 
@@ -111,7 +114,7 @@ async function getLog() {
         date = ''
     }
 
-    await fetch(`/api/log/${configStore.channels[configStore.id].id}?date=${date}`, {
+    await fetch(`/api/log/${configStore.channels[configStore.i].id}?date=${date}`, {
         method: 'GET',
         headers: authStore.authHeader,
     })

@@ -480,15 +480,19 @@ async fn patch_channel(
     role: AuthDetails<Role>,
     user: web::ReqData<UserMeta>,
 ) -> Result<impl Responder, ServiceError> {
-    let manager = controllers.lock().unwrap().get(*id).unwrap();
+    let manager = controllers
+        .lock()
+        .unwrap()
+        .get(*id)
+        .ok_or(format!("Channel {id} not found!"))?;
     let mut data = data.into_inner();
 
     if !role.has_authority(&Role::GlobalAdmin) {
         let channel = handles::select_channel(&pool, &id).await?;
 
-        data.hls_path = channel.hls_path;
-        data.playlist_path = channel.playlist_path;
-        data.storage_path = channel.storage_path;
+        data.public = channel.public;
+        data.playlists = channel.playlists;
+        data.storage = channel.storage;
     }
 
     handles::update_channel(&pool, *id, data).await?;
@@ -665,13 +669,13 @@ async fn update_playout_config(
     user: web::ReqData<UserMeta>,
 ) -> Result<impl Responder, ServiceError> {
     let manager = controllers.lock().unwrap().get(*id).unwrap();
-    let p = manager.channel.lock().unwrap().storage_path.clone();
-    let storage_path = Path::new(&p);
+    let p = manager.channel.lock().unwrap().storage.clone();
+    let storage = Path::new(&p);
     let config_id = manager.config.lock().unwrap().general.id;
 
-    let (_, _, logo) = norm_abs_path(storage_path, &data.processing.logo)?;
-    let (_, _, filler) = norm_abs_path(storage_path, &data.storage.filler)?;
-    let (_, _, font) = norm_abs_path(storage_path, &data.text.font)?;
+    let (_, _, logo) = norm_abs_path(storage, &data.processing.logo)?;
+    let (_, _, filler) = norm_abs_path(storage, &data.storage.filler)?;
+    let (_, _, font) = norm_abs_path(storage, &data.text.font)?;
 
     data.processing.logo = logo;
     data.storage.filler = filler;
@@ -942,8 +946,18 @@ pub async fn process_control(
     let manager = controllers.lock().unwrap().get(*id).unwrap();
     manager.list_init.store(true, Ordering::SeqCst);
 
+    if manager.is_processing.load(Ordering::SeqCst) {
+        return Err(ServiceError::Conflict(
+            "A command is already being processed, please wait".to_string(),
+        ));
+    }
+
+    manager.is_processing.store(true, Ordering::SeqCst);
+
     match proc.into_inner().command {
         ProcessCtl::Status => {
+            manager.is_processing.store(false, Ordering::SeqCst);
+
             if manager.is_alive.load(Ordering::SeqCst) {
                 return Ok(web::Json("active"));
             } else {
@@ -951,7 +965,10 @@ pub async fn process_control(
             }
         }
         ProcessCtl::Start => {
-            manager.async_start().await;
+            if !manager.is_alive.load(Ordering::SeqCst) {
+                manager.channel.lock().unwrap().active = true;
+                manager.async_start().await;
+            }
         }
         ProcessCtl::Stop => {
             manager.channel.lock().unwrap().active = false;
@@ -960,9 +977,14 @@ pub async fn process_control(
         ProcessCtl::Restart => {
             manager.async_stop().await;
             tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
-            manager.async_start().await;
+
+            if !manager.is_alive.load(Ordering::SeqCst) {
+                manager.async_start().await;
+            }
         }
     }
+
+    manager.is_processing.store(false, Ordering::SeqCst);
 
     Ok(web::Json("Success"))
 }
@@ -1059,14 +1081,14 @@ pub async fn gen_playlist(
 ) -> Result<impl Responder, ServiceError> {
     let manager = controllers.lock().unwrap().get(params.0).unwrap();
     manager.config.lock().unwrap().general.generate = Some(vec![params.1.clone()]);
-    let storage_path = manager.config.lock().unwrap().channel.storage_path.clone();
+    let storage = manager.config.lock().unwrap().channel.storage.clone();
 
     if let Some(obj) = data {
         if let Some(paths) = &obj.paths {
             let mut path_list = vec![];
 
             for path in paths {
-                let (p, _, _) = norm_abs_path(&storage_path, path)?;
+                let (p, _, _) = norm_abs_path(&storage, path)?;
 
                 path_list.push(p);
             }
@@ -1244,8 +1266,9 @@ pub async fn remove(
 ) -> Result<impl Responder, ServiceError> {
     let manager = controllers.lock().unwrap().get(*id).unwrap();
     let config = manager.config.lock().unwrap().clone();
+    let recursive = data.recursive;
 
-    match remove_file_or_folder(&config, &data.into_inner().source).await {
+    match remove_file_or_folder(&config, &data.into_inner().source, recursive).await {
         Ok(obj) => Ok(web::Json(obj)),
         Err(e) => Err(e),
     }
@@ -1301,9 +1324,9 @@ async fn get_file(
     let id: i32 = req.match_info().query("id").parse()?;
     let manager = controllers.lock().unwrap().get(id).unwrap();
     let config = manager.config.lock().unwrap();
-    let storage_path = config.channel.storage_path.clone();
+    let storage = config.channel.storage.clone();
     let file_path = req.match_info().query("filename");
-    let (path, _, _) = norm_abs_path(&storage_path, file_path)?;
+    let (path, _, _) = norm_abs_path(&storage, file_path)?;
     let file = actix_files::NamedFile::open(path)?;
 
     Ok(file
@@ -1328,10 +1351,13 @@ async fn get_public(
 ) -> Result<actix_files::NamedFile, ServiceError> {
     let (id, public, file_stem) = path.into_inner();
 
-    let absolute_path = if file_stem.ends_with(".ts") || file_stem.ends_with(".m3u8") {
+    let absolute_path = if file_stem.ends_with(".ts")
+        || file_stem.ends_with(".m3u8")
+        || file_stem.ends_with(".vtt")
+    {
         let manager = controllers.lock().unwrap().get(id).unwrap();
         let config = manager.config.lock().unwrap();
-        config.channel.hls_path.join(public)
+        config.channel.public.join(public)
     } else {
         public_path()
     }

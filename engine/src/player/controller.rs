@@ -68,6 +68,7 @@ pub struct ChannelManager {
     pub ingest_is_running: Arc<AtomicBool>,
     pub is_terminated: Arc<AtomicBool>,
     pub is_alive: Arc<AtomicBool>,
+    pub is_processing: Arc<AtomicBool>,
     pub filter_chain: Option<Arc<Mutex<Vec<String>>>>,
     pub current_date: Arc<Mutex<String>>,
     pub list_init: Arc<AtomicBool>,
@@ -349,7 +350,7 @@ pub fn start_channel(manager: ChannelManager) -> Result<(), ProcessError> {
     let channel_id = config.general.channel_id;
 
     drain_hls_path(
-        &config.channel.hls_path,
+        &config.channel.public,
         &config.output.output_cmd.clone().unwrap_or_default(),
         channel_id,
     )?;
@@ -392,7 +393,11 @@ fn delete_ts<P: AsRef<Path> + Clone + std::fmt::Debug>(
 ) -> io::Result<()> {
     let ts_file = params
         .iter()
-        .filter(|f| f.to_lowercase().ends_with(".ts") || f.to_lowercase().ends_with(".m3u8"))
+        .filter(|f| {
+            f.to_lowercase().ends_with(".ts")
+                || f.to_lowercase().ends_with(".m3u8")
+                || f.to_lowercase().ends_with(".vtt")
+        })
         .collect::<Vec<&String>>();
 
     for entry in WalkDir::new(path.clone())

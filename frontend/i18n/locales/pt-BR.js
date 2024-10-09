@@ -57,6 +57,7 @@ export default {
         play: 'Play',
         title: 'Título',
         duration: 'Duração',
+        total: 'Total',
         in: 'Início',
         out: 'Fim',
         ad: 'Ad',
@@ -93,7 +94,9 @@ export default {
         notExists: 'O armazenamento não existe!',
         create: 'Criar Pasta',
         upload: 'Enviar Arquivos',
-        deleteTitle: 'Deletar Arquivo/Pasta',
+        delete: 'Deletar',
+        file: 'Arquivo',
+        folder: 'Pasta',
         deleteQuestion: 'Tem certeza que deseja deletar?',
         preview: 'Visualizar',
         rename: 'Renomear Arquivo',
@@ -110,6 +113,7 @@ export default {
         folderError: 'Erro ao criar pasta',
         uploadError: 'Erro ao carregar',
         fileExists: 'O arquivo já existe!',
+        recursive: 'Recursivo',
     },
     message: {
         savePreset: 'Salvar predefinição',
@@ -137,6 +141,7 @@ export default {
     },
     log: {
         download: 'Baixar arquivo de registro',
+        reload: 'Recarregar',
     },
     advanced: {
         title: 'Configurações avançadas',
@@ -199,7 +204,7 @@ export default {
         updatePlayoutFailed: 'Falha na atualização da configuração do playout!',
         forbiddenPlaylistPath: 'Acesso proibido: A pasta da lista de reprodução não pode ser aberta',
         noPlayoutConfig: 'Nenhuma configuração de playout encontrada!',
-        hlsPath: 'HLS Path',
+        publicPath: 'Public (HLS) Path',
         playlistPath: 'Playlist Path',
         storagePath: 'Storage Path',
         sharedStorage: 'O armazenamento compartilhado está ativado, use a mesma raiz de armazenamento para todos os canais',

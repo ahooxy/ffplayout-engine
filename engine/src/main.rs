@@ -199,6 +199,8 @@ async fn main() -> std::io::Result<()> {
         .workers(thread_count)
         .run()
         .await?;
+    } else if ARGS.drop_db {
+        db_drop().await;
     } else {
         let channels = ARGS.channels.clone().unwrap_or_else(|| vec![1]);
 
@@ -241,7 +243,7 @@ async fn main() -> std::io::Result<()> {
                     exit(1);
                 };
             } else if ARGS.validate {
-                let mut playlist_path = config.channel.playlist_path.clone();
+                let mut playlist_path = config.channel.playlists.clone();
                 let start_sec = config.playlist.start_sec.unwrap();
                 let date = get_date(false, start_sec, false);
 
@@ -267,8 +269,6 @@ async fn main() -> std::io::Result<()> {
                     playlist,
                     Arc::new(AtomicBool::new(false)),
                 );
-            } else if ARGS.drop_db {
-                db_drop().await;
             } else if !ARGS.init {
                 error!("Run ffplayout with parameters! Run ffplayout -h for more information.");
             }

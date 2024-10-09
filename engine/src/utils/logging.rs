@@ -299,11 +299,7 @@ fn file_formatter(
 
 pub fn log_file_path() -> PathBuf {
     let config = GlobalSettings::global();
-
-    let mut log_path = ARGS
-        .log_path
-        .clone()
-        .unwrap_or(PathBuf::from(&config.logging_path));
+    let mut log_path = PathBuf::from(&ARGS.logs.as_ref().unwrap_or(&config.logs));
 
     if !log_path.is_absolute() {
         log_path = env::current_dir().unwrap().join(log_path);
@@ -400,7 +396,7 @@ pub fn mail_queue(mail_queues: Arc<Mutex<Vec<Arc<Mutex<MailQueue>>>>>) {
                         poisoned.into_inner()
                     });
 
-                    let expire = round_to_nearest_ten(q_lock.config.interval);
+                    let expire = round_to_nearest_ten(q_lock.config.interval.max(30));
 
                     if interval % expire == 0 && !q_lock.is_empty() {
                         if q_lock.config.recipient.contains('@') {
