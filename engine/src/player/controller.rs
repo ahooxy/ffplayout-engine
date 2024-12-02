@@ -1,5 +1,6 @@
 use std::{
-    fmt, fs, io,
+    fmt, fs,
+    io::{self, Read},
     path::Path,
     process::Child,
     sync::{
@@ -10,14 +11,11 @@ use std::{
     time::Duration,
 };
 
-#[cfg(not(windows))]
-use signal_child::Signalable;
-
+use actix_web::web;
 use log::*;
-use regex::Regex;
+use m3u8_rs::Playlist;
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Sqlite};
-use sysinfo::Disks;
 use walkdir::WalkDir;
 
 use crate::player::{
@@ -26,7 +24,7 @@ use crate::player::{
 };
 use crate::utils::{
     config::{OutputMode::*, PlayoutConfig},
-    errors::ProcessError,
+    errors::{ProcessError, ServiceError},
 };
 use crate::ARGS;
 use crate::{
@@ -203,11 +201,6 @@ impl ChannelManager {
         match unit {
             Decoder => {
                 if let Some(proc) = self.decoder.lock()?.as_mut() {
-                    #[cfg(not(windows))]
-                    proc.term()
-                        .map_err(|e| ProcessError::Custom(format!("Decoder: {e}")))?;
-
-                    #[cfg(windows)]
                     proc.kill()
                         .map_err(|e| ProcessError::Custom(format!("Decoder: {e}")))?;
                 }
@@ -231,26 +224,17 @@ impl ChannelManager {
         Ok(())
     }
 
-    /// Wait for process to proper close.
-    /// This prevents orphaned/zombi processes in system
-    pub fn wait(&self, unit: ProcessUnit) -> Result<(), ProcessError> {
-        match unit {
-            Decoder => {
-                if let Some(proc) = self.decoder.lock().unwrap().as_mut() {
-                    proc.wait()
-                        .map_err(|e| ProcessError::Custom(format!("Decoder: {e}")))?;
-                }
-            }
-            Encoder => {
-                if let Some(proc) = self.encoder.lock().unwrap().as_mut() {
-                    proc.wait()
-                        .map_err(|e| ProcessError::Custom(format!("Encoder: {e}")))?;
-                }
-            }
-            Ingest => {
-                if let Some(proc) = self.ingest.lock().unwrap().as_mut() {
-                    proc.wait()
-                        .map_err(|e| ProcessError::Custom(format!("Ingest: {e}")))?;
+    fn run_wait(
+        &self,
+        unit: ProcessUnit,
+        child: &Arc<Mutex<Option<Child>>>,
+    ) -> Result<(), ProcessError> {
+        if let Some(proc) = child.lock().unwrap().as_mut() {
+            loop {
+                match proc.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) => thread::sleep(Duration::from_millis(10)),
+                    Err(e) => return Err(ProcessError::Custom(format!("{unit}: {e}"))),
                 }
             }
         }
@@ -258,44 +242,65 @@ impl ChannelManager {
         Ok(())
     }
 
-    pub async fn async_stop(&self) {
+    /// Wait for process to proper close.
+    /// This prevents orphaned/zombi processes in system
+    pub fn wait(&self, unit: ProcessUnit) -> Result<(), ProcessError> {
+        match unit {
+            Decoder => self.run_wait(unit, &self.decoder)?,
+            Encoder => self.run_wait(unit, &self.encoder)?,
+            Ingest => self.run_wait(unit, &self.ingest)?,
+        }
+
+        thread::sleep(Duration::from_millis(50));
+
+        Ok(())
+    }
+
+    pub async fn async_stop(&self) -> Result<(), ServiceError> {
+        let channel_id = self.channel.lock().unwrap().id;
+
+        if self.is_alive.load(Ordering::SeqCst) {
+            debug!(target: Target::all(), channel = channel_id; "Deactivate playout and stop all child processes from channel: <yellow>{channel_id}</>");
+        }
+
         self.is_terminated.store(true, Ordering::SeqCst);
         self.is_alive.store(false, Ordering::SeqCst);
         self.ingest_is_running.store(false, Ordering::SeqCst);
         self.run_count.fetch_sub(1, Ordering::SeqCst);
         let pool = self.db_pool.clone().unwrap();
-        let channel_id = self.channel.lock().unwrap().id;
-        debug!(target: Target::all(), channel = channel_id; "Deactivate playout and stop all child processes from channel: <yellow>{channel_id}</>");
 
         if let Err(e) = handles::update_player(&pool, channel_id, false).await {
             error!(target: Target::all(), channel = channel_id; "Unable write to player status: {e}");
         };
 
         for unit in [Decoder, Encoder, Ingest] {
-            if let Err(e) = self.stop(unit) {
+            let self_clone = self.clone();
+
+            if let Err(e) = web::block(move || self_clone.stop(unit)).await? {
                 if !e.to_string().contains("exited process") {
                     error!(target: Target::all(), channel = channel_id; "{e}")
                 }
             }
         }
+
+        Ok(())
     }
 
     /// No matter what is running, terminate them all.
     pub fn stop_all(&self) {
+        let channel_id = self.channel.lock().unwrap().id;
+
+        if self.is_alive.load(Ordering::SeqCst) {
+            debug!(target: Target::all(), channel = channel_id; "Stop all child processes from channel: <yellow>{channel_id}</>");
+        }
+
         self.is_terminated.store(true, Ordering::SeqCst);
         self.is_alive.store(false, Ordering::SeqCst);
         self.ingest_is_running.store(false, Ordering::SeqCst);
         self.run_count.fetch_sub(1, Ordering::SeqCst);
-        let channel_id = self.channel.lock().unwrap().id;
-        debug!(target: Target::all(), channel = channel_id; "Stop all child processes from channel: <yellow>{channel_id}</>");
 
         for unit in [Decoder, Encoder, Ingest] {
             if let Err(e) = self.stop(unit) {
-                if !e.to_string().contains("exited process") {
-                    error!(target: Target::all(), channel = channel_id; "{e}")
-                }
-            }
-            if let Err(e) = self.wait(unit) {
                 if !e.to_string().contains("exited process") {
                     error!(target: Target::all(), channel = channel_id; "{e}")
                 }
@@ -349,11 +354,7 @@ pub fn start_channel(manager: ChannelManager) -> Result<(), ProcessError> {
     let filler_list = manager.filler_list.clone();
     let channel_id = config.general.channel_id;
 
-    drain_hls_path(
-        &config.channel.public,
-        &config.output.output_cmd.clone().unwrap_or_default(),
-        channel_id,
-    )?;
+    drain_hls_path(&config.channel.public)?;
 
     debug!(target: Target::all(), channel = channel_id; "Start ffplayout v{VERSION}, channel: <yellow>{channel_id}</>");
 
@@ -370,58 +371,61 @@ pub fn start_channel(manager: ChannelManager) -> Result<(), ProcessError> {
     }
 }
 
-pub fn drain_hls_path(path: &Path, params: &[String], channel_id: i32) -> io::Result<()> {
-    let disks = Disks::new_with_refreshed_list();
+pub fn drain_hls_path(path: &Path) -> io::Result<()> {
+    let m3u8_files = find_m3u8_files(path)?;
+    let mut pl_segments = vec![];
 
-    for disk in &disks {
-        if disk.mount_point().to_string_lossy().len() > 1
-            && path.starts_with(disk.mount_point())
-            && disk.available_space() < 1073741824
-            && path.is_dir()
-        {
-            warn!(target: Target::file_mail(), channel = channel_id; "HLS storage space is less then 1GB, drain TS files...");
-            delete_ts(path, params)?
-        }
+    for file in m3u8_files {
+        let mut file = std::fs::File::open(file).unwrap();
+        let mut bytes: Vec<u8> = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+
+        if let Ok(Playlist::MediaPlaylist(pl)) = m3u8_rs::parse_playlist_res(&bytes) {
+            for segment in pl.segments {
+                pl_segments.push(segment.uri);
+            }
+        };
     }
 
-    Ok(())
+    delete_old_segments(path, &pl_segments)
 }
 
-fn delete_ts<P: AsRef<Path> + Clone + std::fmt::Debug>(
-    path: P,
-    params: &[String],
-) -> io::Result<()> {
-    let ts_file = params
-        .iter()
-        .filter(|f| {
-            f.to_lowercase().ends_with(".ts")
-                || f.to_lowercase().ends_with(".m3u8")
-                || f.to_lowercase().ends_with(".vtt")
-        })
-        .collect::<Vec<&String>>();
+/// Recursively searches for all files with the .m3u8 extension in the specified path.
+fn find_m3u8_files(path: &Path) -> io::Result<Vec<String>> {
+    let mut m3u8_files = Vec::new();
 
-    for entry in WalkDir::new(path.clone())
+    for entry in WalkDir::new(path)
         .into_iter()
-        .flat_map(|e| e.ok())
-        .filter(|f| f.path().is_file())
-        .filter(|f| paths_match(&ts_file, &f.path().to_string_lossy()))
-        .map(|p| p.path().to_string_lossy().to_string())
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_file() && e.path().extension().map_or(false, |ext| ext == "m3u8"))
     {
-        fs::remove_file(entry)?;
+        m3u8_files.push(entry.path().to_string_lossy().to_string());
+    }
+
+    Ok(m3u8_files)
+}
+
+/// Check if segment is in playlist, if not, delete it.
+fn delete_old_segments<P: AsRef<Path> + Clone + std::fmt::Debug>(
+    path: P,
+    pl_segments: &[String],
+) -> io::Result<()> {
+    for entry in WalkDir::new(path)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path().is_file()
+                && e.path()
+                    .extension()
+                    .map_or(false, |ext| ext == "ts" || ext == "vtt")
+        })
+    {
+        let filename = entry.file_name().to_string_lossy().to_string();
+
+        if !pl_segments.contains(&filename) {
+            fs::remove_file(entry.path())?;
+        }
     }
 
     Ok(())
-}
-
-fn paths_match(patterns: &Vec<&String>, actual_path: &str) -> bool {
-    for pattern in patterns {
-        let pattern_escaped = regex::escape(pattern);
-        let pattern_regex = pattern_escaped.replace(r"%d", r"\d+");
-        let re = Regex::new(&pattern_regex).unwrap();
-
-        if re.is_match(actual_path) {
-            return true;
-        }
-    }
-    false
 }

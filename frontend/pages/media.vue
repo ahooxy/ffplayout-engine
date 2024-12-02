@@ -330,14 +330,6 @@ useHead({
     title: `${t('button.media')} | ffplayout`,
 })
 
-watch([width], () => {
-    if (width.value < 640) {
-        horizontal.value = true
-    } else {
-        horizontal.value = false
-    }
-})
-
 const horizontal = ref(false)
 const deleteName = ref('')
 const recursive = ref(false)
@@ -369,10 +361,6 @@ onMounted(async () => {
     let config_extensions = configStore.playout.storage.extensions
     let extra_extensions = configStore.channels[configStore.i].extra_extensions
 
-    if (typeof config_extensions === 'string') {
-        config_extensions = config_extensions.split(',')
-    }
-
     if (typeof extra_extensions === 'string') {
         extra_extensions = extra_extensions.split(',')
     }
@@ -385,6 +373,14 @@ onMounted(async () => {
 
     if (!mediaStore.folderTree.parent || !mediaStore.currentPath) {
         await mediaStore.getTree('')
+    }
+})
+
+watch([width], () => {
+    if (width.value < 640) {
+        horizontal.value = true
+    } else {
+        horizontal.value = false
     }
 })
 

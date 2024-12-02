@@ -467,8 +467,7 @@ async fn get_all_channels(
 /// ```
 #[patch("/channel/{id}")]
 #[protect(
-    "Role::GlobalAdmin",
-    "Role::ChannelAdmin",
+    any("Role::GlobalAdmin", "Role::ChannelAdmin"),
     ty = "Role",
     expr = "user.channels.contains(&*id) || role.has_authority(&Role::GlobalAdmin)"
 )]
@@ -869,10 +868,22 @@ pub async fn control_playout(
 ) -> Result<impl Responder, ServiceError> {
     let manager = controllers.lock().unwrap().get(*id).unwrap();
 
-    match control_state(&pool, manager, &control.control).await {
+    if manager.is_processing.load(Ordering::SeqCst) {
+        return Err(ServiceError::Conflict(
+            "A command is already being processed, please wait".to_string(),
+        ));
+    }
+
+    manager.is_processing.store(true, Ordering::SeqCst);
+
+    let resp = match control_state(&pool, &manager, &control.control).await {
         Ok(res) => Ok(web::Json(res)),
         Err(e) => Err(e),
-    }
+    };
+
+    manager.is_processing.store(false, Ordering::SeqCst);
+
+    resp
 }
 
 /// **Get current Clip**
@@ -972,10 +983,10 @@ pub async fn process_control(
         }
         ProcessCtl::Stop => {
             manager.channel.lock().unwrap().active = false;
-            manager.async_stop().await;
+            manager.async_stop().await?;
         }
         ProcessCtl::Restart => {
-            manager.async_stop().await;
+            manager.async_stop().await?;
             tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
 
             if !manager.is_alive.load(Ordering::SeqCst) {

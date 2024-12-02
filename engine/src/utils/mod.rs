@@ -13,7 +13,7 @@ use log::*;
 use path_clean::PathClean;
 use rand::Rng;
 use regex::Regex;
-use tokio::fs;
+use tokio::{fs, process::Command};
 
 use serde::{
     de::{self, Visitor},
@@ -32,6 +32,7 @@ pub mod logging;
 pub mod playlist;
 pub mod system;
 pub mod task_runner;
+pub mod time_machine;
 
 use crate::db::models::GlobalSettings;
 use crate::player::utils::time_to_sec;
@@ -230,12 +231,14 @@ pub async fn read_log_file(channel_id: &i32, date: &str) -> Result<String, Servi
         format!("_{date}")
     };
 
-    let log_path = log_file_path().join(format!("ffplayout_{channel_id}{date_str}.log"));
+    let log_path = log_file_path()
+        .join(format!("ffplayout_{channel_id}{date_str}.log"))
+        .clean();
     let file_size = fs::metadata(&log_path).await?.len() as f64;
 
     let log_content = if file_size > 5000000.0 {
         error!("Log file to big: {}", sizeof_fmt(file_size));
-        format!("The log file is larger ({}) than the hard limit of 5MB, the probability is very high that something is wrong with the playout. Check this on the server with `less {log_path:?}`.", sizeof_fmt(file_size))
+        format!("The log file is larger ({}) than the hard limit of 5MB, the probability is very high that something is wrong with the playout.\nCheck this on the server with `less {log_path:?}`.", sizeof_fmt(file_size))
     } else {
         fs::read_to_string(log_path).await?
     };
@@ -293,7 +296,7 @@ where
 }
 
 /// get a free tcp socket
-pub fn free_tcp_socket(exclude_socket: String) -> Option<String> {
+pub fn gen_tcp_socket(exclude_socket: String) -> Option<String> {
     for _ in 0..100 {
         let port = rand::thread_rng().gen_range(45321..54268);
         let socket = format!("127.0.0.1:{port}");
@@ -336,7 +339,7 @@ pub async fn copy_assets(storage_path: &Path) -> Result<(), std::io::Error> {
             let font_target = target.join("DejaVuSans.ttf");
             let logo_target = target.join("logo.png");
 
-            fs::create_dir(&target).await?;
+            fs::create_dir_all(&target).await?;
             fs::copy(&dummy_source, &dummy_target).await?;
             fs::copy(&font_source, &font_target).await?;
             fs::copy(&logo_source, &logo_target).await?;
@@ -365,7 +368,25 @@ pub async fn copy_assets(storage_path: &Path) -> Result<(), std::io::Error> {
                 }
             }
         }
+    } else {
+        error!("Storage path {storage_path:?} not exists!");
     }
 
     Ok(())
+}
+
+/// Combined function to check if the program is running inside a container.
+/// Returns `true` if running inside a container, otherwise `false`.
+pub async fn is_running_in_container() -> bool {
+    // Check for Docker or Podman specific files
+    if Path::new("/.dockerenv").exists() || Path::new("/run/.containerenv").exists() {
+        return true;
+    }
+
+    // Run `systemd-detect-virt -c` to check if we are in a container
+    if let Ok(output) = Command::new("systemd-detect-virt").arg("-c").output().await {
+        return output.status.success();
+    }
+
+    false
 }

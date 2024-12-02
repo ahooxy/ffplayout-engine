@@ -27,7 +27,7 @@ use crate::ARGS;
 #[cfg(target_family = "unix")]
 use crate::utils::db_path;
 
-#[derive(Parser, Debug, Clone)]
+#[derive(Parser, Debug, Default, Clone)]
 #[clap(version,
     about = "ffplayout - 24/7 broadcasting solution",
     long_about = Some("ffplayout - 24/7 broadcasting solution\n
@@ -70,14 +70,6 @@ pub struct Args {
 
     #[clap(long, env, help_heading = Some("Initial Setup"), help = "Use TLS for system mails")]
     pub mail_starttls: bool,
-
-    #[clap(
-        long,
-        env,
-        help_heading = Some("Initial Setup"),
-        help = "Share storage across channels, important for running in Containers"
-    )]
-    pub shared: bool,
 
     #[clap(long, env, help_heading = Some("Initial Setup / General"), help = "Logging path")]
     pub logs: Option<String>,
@@ -148,6 +140,9 @@ pub struct Args {
     )]
     pub channels: Option<Vec<i32>>,
 
+    #[clap(long, hide = true, help = "set fake time (for debugging)")]
+    pub fake_time: Option<String>,
+
     #[clap(
         short,
         long,
@@ -175,7 +170,7 @@ pub struct Args {
     #[clap(long, help_heading = Some("Playlist"), help = "Only validate given playlist")]
     pub validate: bool,
 
-    #[clap(long, env, help_heading = Some("Playout"), help = "Run playout without webserver and frontend.")]
+    #[clap(long, env, help_heading = Some("Playout"), help = "Run playout without webserver and frontend")]
     pub foreground: bool,
 
     #[clap(short, long, help_heading = Some("Playout"), help = "Play folder content")]
@@ -183,6 +178,9 @@ pub struct Args {
 
     #[clap(long, env, help_heading = Some("Playout"), help = "Keep log file for given days")]
     pub log_backup_count: Option<usize>,
+
+    #[clap(long, env, help_heading = Some("Playout"), help = "Add timestamp to log line")]
+    pub log_timestamp: bool,
 
     #[clap(short, long, help_heading = Some("Playout"), help = "Set output mode: desktop, hls, null, stream")]
     pub output: Option<OutputMode>,
@@ -251,7 +249,6 @@ pub async fn run_args(pool: &Pool<Sqlite>) -> Result<(), i32> {
         let mut playlist = String::new();
         let mut logging = String::new();
         let mut public = String::new();
-        let mut shared_store = String::new();
         let mut mail_smtp = String::new();
         let mut mail_user = String::new();
         let mut mail_starttls = String::new();
@@ -326,23 +323,6 @@ pub async fn run_args(pool: &Pool<Sqlite>) -> Result<(), i32> {
                     .trim()
                     .trim_matches(|c| c == '"' || c == '\'')
                     .to_string();
-            }
-        }
-
-        if args.shared {
-            global.shared = true;
-        } else {
-            print!(
-                "Shared storage [{}]: ",
-                if global.shared { "yes" } else { "no" }
-            );
-            stdout().flush().unwrap();
-            stdin()
-                .read_line(&mut shared_store)
-                .expect("Did not enter a yes or no?");
-
-            if !shared_store.trim().is_empty() {
-                global.shared = shared_store.trim().to_lowercase().starts_with('y');
             }
         }
 

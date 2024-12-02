@@ -1,5 +1,6 @@
 import { cloneDeep } from 'lodash-es'
 import { defineStore } from 'pinia'
+import type { AdvancedConfig } from '~/types/advanced_config'
 
 export const useConfig = defineStore('config', {
     state: () => ({
@@ -9,8 +10,8 @@ export const useConfig = defineStore('config', {
         channels: [] as Channel[],
         channelsRaw: [] as Channel[],
         playlistLength: 86400.0,
-        advanced: {} as any,
-        playout: {} as any,
+        advanced: {} as AdvancedConfig,
+        playout: {} as PlayoutConfigExt,
         currentUser: 0,
         configUser: {} as User,
         utcOffset: 0,
@@ -31,7 +32,7 @@ export const useConfig = defineStore('config', {
                     await this.getPlayoutConfig()
                     await this.getUserConfig()
 
-                    if (this.configUser.id === 1) {
+                    if (authStore.role === 'GlobalAdmin') {
                         await this.getAdvancedConfig()
                     }
                 })
@@ -102,18 +103,13 @@ export const useConfig = defineStore('config', {
             const indexStore = useIndex()
             const channel = this.channels[this.i].id
 
-            await fetch(`/api/playout/config/${channel}`, {
+            await $fetch<PlayoutConfigExt>(`/api/playout/config/${channel}`, {
                 method: 'GET',
                 headers: authStore.authHeader,
             })
-                .then((response) => response.json())
                 .then((data) => {
                     data.playlist.startInSec = timeToSeconds(data.playlist.day_start ?? 0)
                     data.playlist.lengthInSec = timeToSeconds(data.playlist.length ?? this.playlistLength)
-
-                    if (data.storage.extensions) {
-                        data.storage.extensions = data.storage.extensions.join(',')
-                    }
 
                     this.playout = data
                 })
@@ -128,7 +124,7 @@ export const useConfig = defineStore('config', {
             const indexStore = useIndex()
             const channel = this.channels[this.i].id
 
-            await $fetch(`/api/playout/advanced/${channel}`, {
+            await $fetch<AdvancedConfig>(`/api/playout/advanced/${channel}`, {
                 method: 'GET',
                 headers: authStore.authHeader,
             })
@@ -148,10 +144,6 @@ export const useConfig = defineStore('config', {
             this.playlistLength = timeToSeconds(obj.playlist.length)
             this.playout.playlist.startInSec = timeToSeconds(obj.playlist.day_start)
             this.playout.playlist.lengthInSec = timeToSeconds(obj.playlist.length)
-
-            if (typeof obj.storage.extensions === 'string') {
-                obj.storage.extensions = obj.storage.extensions.replace(' ', '').split(/,|;/)
-            }
 
             const update = await fetch(`/api/playout/config/${channel}`, {
                 method: 'PUT',
