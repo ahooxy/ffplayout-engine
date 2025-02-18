@@ -1,9 +1,6 @@
 use std::{
     collections::HashSet,
-    fs::File,
-    io,
-    process::exit,
-    sync::{atomic::AtomicBool, Arc, Mutex},
+    sync::{atomic::AtomicBool, Arc},
     thread,
 };
 
@@ -17,19 +14,22 @@ use actix_files::Files;
 use actix_web_static_files::ResourceFiles;
 
 use log::*;
+use tokio::{fs::File, io::AsyncReadExt, sync::Mutex};
 
 use ffplayout::{
     api::routes::*,
-    db::{db_drop, db_pool, handles, models::init_globales},
+    db::{db_drop, db_pool, handles, init_globales},
     player::{
         controller::{ChannelController, ChannelManager},
         utils::{get_date, is_remote, json_validate::validate_playlist, JsonPlaylist},
     },
     sse::{broadcast::Broadcaster, routes::*, SseAuthState},
     utils::{
-        args_parse::run_args,
+        args_parse::init_args,
         config::get_config,
-        logging::{init_logging, MailQueue},
+        errors::ProcessError,
+        logging::init_logging,
+        mail::{self, MailQueue},
         playlist::generate_playlist,
         time_machine::set_mock_time,
     },
@@ -44,81 +44,77 @@ include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
 fn thread_counter() -> usize {
     let available_threads = thread::available_parallelism()
-        .map(|n| n.get())
+        .map(std::num::NonZero::get)
         .unwrap_or(1);
 
     (available_threads / 2).max(2)
 }
 
-#[actix_web::main]
-async fn main() -> std::io::Result<()> {
+#[tokio::main]
+async fn main() -> Result<(), ProcessError> {
     let mail_queues = Arc::new(Mutex::new(vec![]));
+    let pool = db_pool().await?;
 
-    let pool = db_pool()
-        .await
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    let mut init = init_args(&pool).await?;
 
-    if let Err(c) = run_args(&pool).await {
-        exit(c);
+    if ARGS.init {
+        return Ok(());
     }
 
-    set_mock_time(&ARGS.fake_time);
+    set_mock_time(&ARGS.fake_time)?;
+    init_globales(&pool).await?;
 
-    init_globales(&pool).await;
-    init_logging(mail_queues.clone())?;
+    // LoggerHandle should be kept alive until the end
+    let _logger = init_logging(mail_queues.clone());
 
     let channel_controllers = Arc::new(Mutex::new(ChannelController::new()));
 
     if let Some(conn) = &ARGS.listen {
-        let channels = handles::select_related_channels(&pool, None)
-            .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        let channels = handles::select_related_channels(&pool, None).await?;
 
-        for channel in channels.iter() {
-            let config = get_config(&pool, channel.id)
-                .await
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-            let manager = ChannelManager::new(Some(pool.clone()), channel.clone(), config.clone());
-            let m_queue = Arc::new(Mutex::new(MailQueue::new(channel.id, config.mail)));
+        for channel in channels.into_iter() {
+            let config = get_config(&pool, channel.id).await?;
+            let m_queue = Arc::new(Mutex::new(MailQueue::new(channel.id, config.mail.clone())));
+            let channel_active = channel.active;
+            let manager = ChannelManager::new(pool.clone(), channel, config).await;
 
-            channel_controllers
-                .lock()
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
-                .add(manager.clone());
+            if init {
+                if let Err(e) = manager.storage.lock().await.copy_assets().await {
+                    error!("{e}");
+                };
 
-            if let Ok(mut mqs) = mail_queues.lock() {
-                mqs.push(m_queue.clone());
+                init = false;
             }
 
-            if channel.active {
-                manager.async_start().await;
+            mail_queues.lock().await.push(m_queue);
+
+            if channel_active {
+                manager.start().await?;
             }
+
+            channel_controllers.lock().await.add(manager);
         }
 
-        let ip_port = conn.split(':').collect::<Vec<&str>>();
-        let addr = ip_port[0];
-        let port = ip_port
-            .get(1)
-            .and_then(|p| p.parse::<u16>().ok())
-            .ok_or(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "<ADRESSE>:<PORT> needed! For example: 127.0.0.1:8787",
+        let (addr, port) = conn
+            .split_once(':')
+            .map(|(a, p)| (a, p.parse::<u16>().ok()))
+            .and_then(|(a, p)| p.map(|p| (a, p)))
+            .ok_or(ProcessError::IO(
+                "<ADRESSE>:<PORT> needed! For example: 127.0.0.1:8787".to_string(),
             ))?;
         let controllers = web::Data::from(channel_controllers.clone());
+        let queues = web::Data::from(mail_queues);
         let auth_state = web::Data::new(SseAuthState {
-            uuids: tokio::sync::Mutex::new(HashSet::new()),
+            uuids: Mutex::new(HashSet::new()),
         });
         let broadcast_data = Broadcaster::create();
-        let thread_count = thread_counter();
 
-        info!("Running ffplayout API, listen on http://{conn}");
+        info!("Running ffplayout, listen on http://{conn}");
 
         let db_clone = pool.clone();
 
         // no 'allow origin' here, give it to the reverse proxy
         HttpServer::new(move || {
-            let queues = mail_queues.clone();
-
             let auth = HttpAuthentication::bearer(validator);
             let db_pool = web::Data::new(db_clone.clone());
             // Customize logging format to get IP though proxies.
@@ -127,21 +123,24 @@ async fn main() -> std::io::Result<()> {
 
             let mut web_app = App::new()
                 .app_data(db_pool)
-                .app_data(web::Data::from(queues))
+                .app_data(queues.clone())
                 .app_data(controllers.clone())
                 .app_data(auth_state.clone())
                 .app_data(web::Data::from(Arc::clone(&broadcast_data)))
                 .wrap(logger)
-                .service(login)
+                .service(web::scope("/auth").service(login).service(refresh))
                 .service(
                     web::scope("/api")
-                        .wrap(auth.clone())
+                        .wrap(auth)
                         .service(add_user)
                         .service(get_user)
                         .service(get_by_name)
                         .service(get_users)
                         .service(remove_user)
+                        .service(add_advanced_config)
                         .service(get_advanced_config)
+                        .service(get_related_advanced_config)
+                        .service(remove_related_advanced_config)
                         .service(update_advanced_config)
                         .service(get_playout_config)
                         .service(update_playout_config)
@@ -199,56 +198,31 @@ async fn main() -> std::io::Result<()> {
             web_app
         })
         .bind((addr, port))?
-        .workers(thread_count)
+        .workers(thread_counter())
         .run()
         .await?;
     } else if ARGS.drop_db {
         db_drop().await;
-    } else {
-        let channels = ARGS.channels.clone().unwrap_or_else(|| vec![1]);
-
-        for (index, channel_id) in channels.iter().enumerate() {
-            let config = match get_config(&pool, *channel_id).await {
-                Ok(c) => c,
-                Err(e) => {
-                    eprint!("No config found, channel may not exists!\nOriginal error message: ");
-                    return Err(io::Error::new(io::ErrorKind::Other, e.to_string()));
-                }
-            };
-            let channel = handles::select_channel(&pool, channel_id)
-                .await
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-            let manager = ChannelManager::new(Some(pool.clone()), channel.clone(), config.clone());
+    } else if let Some(channel_ids) = &ARGS.channel {
+        for (index, channel_id) in channel_ids.iter().enumerate() {
+            let config = get_config(&pool, *channel_id).await?;
+            let channel = handles::select_channel(&pool, channel_id).await?;
+            let manager = ChannelManager::new(pool.clone(), channel, config.clone()).await;
 
             if ARGS.foreground {
-                if ARGS.channels.is_none() {
-                    error!(
-                        "Foreground mode needs at least 1 channel, run with `--channels (1 2 ...)`"
-                    );
-                    exit(1);
-                }
                 let m_queue = Arc::new(Mutex::new(MailQueue::new(*channel_id, config.mail)));
 
-                channel_controllers
-                    .lock()
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
-                    .add(manager.clone());
+                channel_controllers.lock().await.add(manager.clone());
+                mail_queues.lock().await.push(m_queue);
 
-                if let Ok(mut mqs) = mail_queues.lock() {
-                    mqs.push(m_queue.clone());
-                }
-
-                manager.foreground_start(index).await;
+                manager.foreground_start(index).await?;
             } else if ARGS.generate.is_some() {
                 // run a simple playlist generator and save them to disk
-                if let Err(e) = generate_playlist(manager) {
-                    error!("{e}");
-                    exit(1);
-                };
+                generate_playlist(manager).await?;
             } else if ARGS.validate {
                 let mut playlist_path = config.channel.playlists.clone();
                 let start_sec = config.playlist.start_sec.unwrap();
-                let date = get_date(false, start_sec, false);
+                let date = get_date(false, start_sec, false, &config.channel.timezone);
 
                 if playlist_path.is_dir() || is_remote(&playlist_path.to_string_lossy()) {
                     let d: Vec<&str> = date.split('-').collect();
@@ -259,28 +233,41 @@ async fn main() -> std::io::Result<()> {
                         .with_extension("json");
                 }
 
-                let f = File::options()
+                let mut f = File::options()
                     .read(true)
                     .write(false)
-                    .open(&playlist_path)?;
+                    .open(&playlist_path)
+                    .await?;
 
-                let playlist: JsonPlaylist = serde_json::from_reader(f)?;
+                let mut contents = String::new();
+                f.read_to_string(&mut contents).await?;
+
+                let playlist: JsonPlaylist = serde_json::from_str(&contents)?;
 
                 validate_playlist(
                     config,
                     Arc::new(Mutex::new(Vec::new())),
                     playlist,
                     Arc::new(AtomicBool::new(false)),
-                );
-            } else if !ARGS.init {
-                error!("Run ffplayout with parameters! Run ffplayout -h for more information.");
+                )
+                .await;
+            } else if ARGS.test_mail {
+                mail::send_mail(&config.mail, "This is just a test email...".to_string()).await?;
             }
         }
+    } else {
+        error!(
+            "Run ffplayout with correct parameters! For example:
+            -l 127.0.0.1
+            --channel 1 2 --foreground
+            --channel 1 --generate 2025-01-20 - 2025-01-25
+        Run ffplayout -h for more information."
+        );
     }
 
-    for channel_ctl in &channel_controllers.lock().unwrap().channels {
-        channel_ctl.channel.lock().unwrap().active = false;
-        channel_ctl.stop_all();
+    for manager in &channel_controllers.lock().await.managers {
+        manager.channel.lock().await.active = false;
+        manager.stop_all(false).await;
     }
 
     pool.close().await;

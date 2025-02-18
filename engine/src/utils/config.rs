@@ -5,6 +5,7 @@ use std::{
 };
 
 use chrono::NaiveTime;
+use chrono_tz::Tz;
 use flexi_logger::Level;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -14,7 +15,8 @@ use tokio::{fs, io::AsyncReadExt};
 use ts_rs::TS;
 
 use crate::db::{handles, models};
-use crate::utils::{files::norm_abs_path, gen_tcp_socket, time_to_sec};
+use crate::file::norm_abs_path;
+use crate::utils::{gen_tcp_socket, time_to_sec};
 use crate::vec_strings;
 use crate::AdvancedConfig;
 use crate::ARGS;
@@ -44,20 +46,24 @@ pub const FFMPEG_IGNORE_ERRORS: [&str; 13] = [
     "frame size not set",
 ];
 
-pub const FFMPEG_UNRECOVERABLE_ERRORS: [&str; 6] = [
+pub const FFMPEG_UNRECOVERABLE_ERRORS: [&str; 9] = [
     "Address already in use",
+    "Device creation failed",
     "Invalid argument",
     "Numerical result",
+    "No such filter",
     "Error initializing complex filters",
     "Error while decoding stream #0:0: Invalid data found when processing input",
     "Unrecognized option",
+    "Option not found",
 ];
 
-#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize, TS)]
+#[derive(Debug, Clone, Default, Eq, PartialEq, Deserialize, Serialize, TS)]
 #[ts(export, export_to = "playout_config.d.ts")]
 #[serde(rename_all = "lowercase")]
 pub enum OutputMode {
     Desktop,
+    #[default]
     HLS,
     Null,
     Stream,
@@ -71,12 +77,6 @@ impl OutputMode {
             "stream" => Self::Stream,
             _ => Self::HLS,
         }
-    }
-}
-
-impl Default for OutputMode {
-    fn default() -> Self {
-        Self::HLS
     }
 }
 
@@ -191,6 +191,8 @@ pub struct Channel {
     pub playlists: PathBuf,
     pub storage: PathBuf,
     pub shared: bool,
+    #[ts(type = "string")]
+    pub timezone: Option<Tz>,
 }
 
 impl Channel {
@@ -201,6 +203,7 @@ impl Channel {
             playlists: PathBuf::from(channel.playlists.clone()),
             storage: PathBuf::from(channel.storage.clone()),
             shared: config.shared,
+            timezone: channel.timezone,
         }
     }
 }
@@ -262,13 +265,16 @@ pub struct Mail {
     pub smtp_server: String,
     #[ts(skip)]
     #[serde(skip_serializing, skip_deserializing)]
-    pub starttls: bool,
+    pub smtp_starttls: bool,
     #[ts(skip)]
     #[serde(skip_serializing, skip_deserializing)]
-    pub sender_addr: String,
+    pub smtp_user: String,
     #[ts(skip)]
     #[serde(skip_serializing, skip_deserializing)]
-    pub sender_pass: String,
+    pub smtp_password: String,
+    #[ts(skip)]
+    #[serde(skip_serializing, skip_deserializing)]
+    pub smtp_port: u16,
     pub recipient: String,
     #[ts(type = "string")]
     pub mail_level: Level,
@@ -278,12 +284,13 @@ pub struct Mail {
 impl Mail {
     fn new(global: &models::GlobalSettings, config: &models::Configuration) -> Self {
         Self {
-            show: !global.mail_password.is_empty() && global.mail_smtp != "mail.example.org",
+            show: !global.smtp_password.is_empty() && global.smtp_server != "mail.example.org",
             subject: config.mail_subject.clone(),
-            smtp_server: global.mail_smtp.clone(),
-            starttls: global.mail_starttls,
-            sender_addr: global.mail_user.clone(),
-            sender_pass: global.mail_password.clone(),
+            smtp_server: global.smtp_server.clone(),
+            smtp_starttls: global.smtp_starttls,
+            smtp_user: global.smtp_user.clone(),
+            smtp_password: global.smtp_password.clone(),
+            smtp_port: global.smtp_port,
             recipient: config.mail_recipient.clone(),
             mail_level: string_to_log_level(config.mail_level.clone()),
             interval: config.mail_interval,
@@ -297,9 +304,10 @@ impl Default for Mail {
             show: false,
             subject: String::default(),
             smtp_server: String::default(),
-            starttls: bool::default(),
-            sender_addr: String::default(),
-            sender_pass: String::default(),
+            smtp_starttls: bool::default(),
+            smtp_user: String::default(),
+            smtp_password: String::default(),
+            smtp_port: 465,
             recipient: String::default(),
             mail_level: Level::Debug,
             interval: i64::default(),
@@ -322,11 +330,7 @@ impl Logging {
             ffmpeg_level: config.logging_ffmpeg_level.clone(),
             ingest_level: config.logging_ingest_level.clone(),
             detect_silence: config.logging_detect_silence,
-            ignore_lines: config
-                .logging_ignore
-                .split(';')
-                .map(|s| s.to_string())
-                .collect(),
+            ignore_lines: config.logging_ignore.split(';').map(String::from).collect(),
         }
     }
 }
@@ -356,6 +360,7 @@ pub struct Processing {
     pub audio_channels: u8,
     pub volume: f64,
     pub custom_filter: String,
+    pub override_filter: bool,
     #[serde(default)]
     pub vtt_enable: bool,
     #[serde(default)]
@@ -387,6 +392,7 @@ impl Processing {
             audio_channels: config.processing_audio_channels,
             volume: config.processing_volume,
             custom_filter: config.processing_filter.clone(),
+            override_filter: config.processing_override_filter,
             vtt_enable: config.processing_vtt_enable,
             vtt_dummy: config.processing_vtt_dummy.clone(),
             cmd: None,
@@ -471,7 +477,7 @@ impl Storage {
             extensions: config
                 .storage_extensions
                 .split(';')
-                .map(|s| s.to_string())
+                .map(String::from)
                 .collect(),
             shuffle: config.storage_shuffle,
             shared_storage,
@@ -594,14 +600,6 @@ fn default_track_index() -> i32 {
     -1
 }
 
-// fn default_tracks() -> i32 {
-//     1
-// }
-
-// fn default_channels() -> u8 {
-//     2
-// }
-
 impl PlayoutConfig {
     pub async fn new(pool: &Pool<Sqlite>, channel_id: i32) -> Result<Self, ServiceError> {
         let global = handles::select_global(pool).await?;
@@ -620,21 +618,14 @@ impl PlayoutConfig {
         let mut text = Text::new(&config);
         let task = Task::new(&config);
         let mut output = Output::new(&config);
-
-        if !channel.storage.is_dir() {
-            tokio::fs::create_dir_all(&channel.storage)
-                .await
-                .unwrap_or_else(|_| panic!("Can't create storage folder: {:#?}", channel.storage));
-        }
-
         let mut storage = Storage::new(&config, channel.storage.clone(), channel.shared);
 
         if !channel.playlists.is_dir() {
-            tokio::fs::create_dir_all(&channel.playlists).await?;
+            fs::create_dir_all(&channel.playlists).await?;
         }
 
         if !channel.logs.is_dir() {
-            tokio::fs::create_dir_all(&channel.logs).await?;
+            fs::create_dir_all(&channel.logs).await?;
         }
 
         let (filler_path, _, filler) = norm_abs_path(&channel.storage, &config.storage_filler)?;
@@ -642,10 +633,10 @@ impl PlayoutConfig {
         storage.filler = filler;
         storage.filler_path = filler_path;
 
-        playlist.start_sec = Some(time_to_sec(&playlist.day_start));
+        playlist.start_sec = Some(time_to_sec(&playlist.day_start, &channel.timezone));
 
         if playlist.length.contains(':') {
-            playlist.length_sec = Some(time_to_sec(&playlist.length));
+            playlist.length_sec = Some(time_to_sec(&playlist.length, &channel.timezone));
         } else {
             playlist.length_sec = Some(86400.0);
         }
@@ -660,7 +651,7 @@ impl PlayoutConfig {
         processing.logo_path = logo_path.to_string_lossy().to_string();
 
         if processing.audio_tracks < 1 {
-            processing.audio_tracks = 1
+            processing.audio_tracks = 1;
         }
 
         let mut process_cmd = vec_strings![];
@@ -737,8 +728,10 @@ impl PlayoutConfig {
             }
 
             let is_tee_muxer = cmd.contains(&"tee".to_string());
+            let re_ts = Regex::new(r"filename=(\S+?\.ts)").unwrap();
+            let re_m3 = Regex::new(r"\](\S+?\.m3u8)").unwrap();
 
-            for item in cmd.iter_mut() {
+            for item in &mut cmd {
                 if item.ends_with(".ts") || (item.ends_with(".m3u8") && item != "master.m3u8") {
                     if is_tee_muxer {
                         // Processes the `item` string to replace `.ts` and `.m3u8` filenames with their absolute paths.
@@ -748,8 +741,6 @@ impl PlayoutConfig {
                         // - For each identified filename, normalizes its path and checks if the parent directory exists.
                         // - Creates the parent directory if it does not exist.
                         // - Replaces the original filename in the `item` string with the normalized absolute path.
-                        let re_ts = Regex::new(r"filename=(\S+?\.ts)").unwrap();
-                        let re_m3 = Regex::new(r"\](\S+?\.m3u8)").unwrap();
 
                         for s in item.clone().split('|') {
                             if let Some(ts) = re_ts.captures(s).and_then(|p| p.get(1)) {
@@ -797,9 +788,9 @@ impl PlayoutConfig {
         // when text overlay without text_from_filename is on, turn also the RPC server on,
         // to get text messages from it
         if text.add_text && !text.text_from_filename {
-            text.zmq_stream_socket = gen_tcp_socket(String::new());
+            text.zmq_stream_socket = gen_tcp_socket("").await;
             text.zmq_server_socket =
-                gen_tcp_socket(text.zmq_stream_socket.clone().unwrap_or_default());
+                gen_tcp_socket(&text.zmq_stream_socket.clone().unwrap_or_default()).await;
             text.node_pos = Some(2);
         } else {
             text.zmq_stream_socket = None;
@@ -852,12 +843,6 @@ impl PlayoutConfig {
         Ok(())
     }
 }
-
-// impl Default for PlayoutConfig {
-//     fn default() -> Self {
-//         Self::new(1)
-//     }
-// }
 
 /// When custom_filter contains loudnorm filter use a different audio encoder,
 /// s302m has higher quality, but is experimental
@@ -935,7 +920,7 @@ pub async fn get_config(
 
     if let Some(start) = args.start {
         config.playlist.day_start.clone_from(&start);
-        config.playlist.start_sec = Some(time_to_sec(&start));
+        config.playlist.start_sec = Some(time_to_sec(&start, &config.channel.timezone));
     }
 
     if let Some(output) = args.output {
@@ -952,20 +937,24 @@ pub async fn get_config(
         config.processing.volume = volume;
     }
 
-    if let Some(mail_smtp) = args.mail_smtp {
-        config.mail.smtp_server = mail_smtp;
+    if let Some(smtp_server) = args.smtp_server {
+        config.mail.smtp_server = smtp_server;
     }
 
-    if let Some(mail_user) = args.mail_user {
-        config.mail.sender_addr = mail_user;
+    if let Some(smtp_user) = args.smtp_user {
+        config.mail.smtp_user = smtp_user;
     }
 
-    if let Some(mail_password) = args.mail_password {
-        config.mail.sender_pass = mail_password;
+    if let Some(smtp_password) = args.smtp_password {
+        config.mail.smtp_password = smtp_password;
     }
 
-    if args.mail_starttls {
-        config.mail.starttls = true;
+    if args.smtp_starttls.is_some_and(|v| &v == "true") {
+        config.mail.smtp_starttls = true;
+    }
+
+    if let Some(smtp_port) = args.smtp_port {
+        config.mail.smtp_port = smtp_port;
     }
 
     Ok(config)

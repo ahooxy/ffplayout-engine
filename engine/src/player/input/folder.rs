@@ -1,100 +1,164 @@
-use std::{
-    path::Path,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc::channel,
-        {Arc, Mutex},
-    },
-    thread::sleep,
-    time::Duration,
-};
+use std::sync::atomic::Ordering;
+
+use async_walkdir::WalkDir;
 
 use log::*;
-use notify::{
-    event::{CreateKind, ModifyKind, RemoveKind, RenameMode},
-    EventKind::{Create, Modify, Remove},
-    RecursiveMode,
-};
-use notify_debouncer_full::new_debouncer;
+use rand::{rngs::StdRng, seq::SliceRandom, SeedableRng};
+use tokio_stream::StreamExt;
 
-use crate::player::utils::{include_file_extension, Media};
+use crate::player::{
+    controller::ChannelManager,
+    utils::{include_file_extension, time_in_seconds, Media},
+};
 use crate::utils::{config::PlayoutConfig, logging::Target};
 
-/// Create a watcher, which monitor file changes.
-/// When a change is register, update the current file list.
-/// This makes it possible, to play infinitely and and always new files to it.
-pub fn watchman(
-    config: PlayoutConfig,
-    is_terminated: Arc<AtomicBool>,
-    sources: Arc<Mutex<Vec<Media>>>,
-) {
-    let id = config.general.channel_id;
-    let path = Path::new(&config.channel.storage);
+/// Folder Sources
+///
+/// Like playlist source, we create here a folder list for iterate over it.
+#[derive(Debug, Clone)]
+pub struct FolderSource {
+    manager: ChannelManager,
+    current_node: Media,
+}
 
-    if !path.exists() {
-        error!(target: Target::file_mail(), channel = id; "Folder path not exists: '{path:?}'");
-        panic!("Folder path not exists: '{path:?}'");
-    }
+impl FolderSource {
+    pub async fn new(config: &PlayoutConfig, manager: ChannelManager) -> Self {
+        let id = config.general.channel_id;
+        let mut path_list = vec![];
+        let mut media_list = vec![];
+        let mut index: usize = 0;
 
-    // let (tx, rx) = channel();
-    let (tx, rx) = channel();
+        if !config.storage.paths.is_empty() && config.general.generate.is_some() {
+            path_list.extend(&config.storage.paths);
+        } else {
+            path_list.push(&config.channel.storage);
+        }
 
-    let mut debouncer = new_debouncer(Duration::from_secs(1), None, tx).unwrap();
+        if let Some(dates) = &config.general.generate {
+            debug!(target: Target::file_mail(), channel = id;
+                "generate: {dates:?}, paths: {path_list:?}"
+            );
+        }
 
-    debouncer.watch(path, RecursiveMode::Recursive).unwrap();
+        for path in &path_list {
+            if !path.is_dir() {
+                error!(target: Target::file_mail(), channel = id; "Path not exists: <b><magenta>{path:?}</></b>");
+            }
 
-    while !is_terminated.load(Ordering::SeqCst) {
-        if let Ok(result) = rx.try_recv() {
-            match result {
-                Ok(events) => events.iter().for_each(|event| match event.kind {
-                    Create(CreateKind::File) | Modify(ModifyKind::Name(RenameMode::To)) => {
-                        let new_path = &event.paths[0];
+            let mut entries = WalkDir::new(path);
 
-                        if new_path.is_file() && include_file_extension(&config, new_path) {
-                            let index = sources.lock().unwrap().len();
-                            let media = Media::new(index, &new_path.to_string_lossy(), false);
-
-                            sources.lock().unwrap().push(media);
-                           info!(target: Target::file_mail(), channel = id; "Create new file: <b><magenta>{new_path:?}</></b>");
-                        }
-                    }
-                    Remove(RemoveKind::File) | Modify(ModifyKind::Name(RenameMode::From)) => {
-                        let old_path = &event.paths[0];
-
-                        if !old_path.is_file() && include_file_extension(&config, old_path) {
-                            sources
-                                .lock()
-                                .unwrap()
-                                .retain(|x| x.source != old_path.to_string_lossy());
-                           info!(target: Target::file_mail(), channel = id; "Remove file: <b><magenta>{old_path:?}</></b>");
-                        }
-                    }
-                    Modify(ModifyKind::Name(RenameMode::Both)) => {
-                        let old_path = &event.paths[0];
-                        let new_path = &event.paths[1];
-
-                        let mut media_list = sources.lock().unwrap();
-
-                        if let Some(index) = media_list
-                        .iter()
-                        .position(|x| *x.source == old_path.display().to_string()) {
-                            let media = Media::new(index, &new_path.to_string_lossy(), false);
-                            media_list[index] = media;
-                           info!(target: Target::file_mail(), channel = id; "Move file: <b><magenta>{old_path:?}</></b> to <b><magenta>{new_path:?}</></b>");
-                        } else if include_file_extension(&config, new_path) {
-                            let index = media_list.len();
-                            let media = Media::new(index, &new_path.to_string_lossy(), false);
-
-                            media_list.push(media);
-                           info!(target: Target::file_mail(), channel = id; "Create new file: <b><magenta>{new_path:?}</></b>");
-                        }
-                    }
-                    _ => trace!(target: Target::file_mail(), channel = id; "Not tracked file event: {event:?}")
-                }),
-                Err(errors) => errors.iter().for_each(|error| error!(target: Target::file_mail(), channel = id; "{error:?}")),
+            while let Some(Ok(entry)) = entries.next().await {
+                if entry.path().is_file() && include_file_extension(config, &entry.path()) {
+                    let media = Media::new(0, &entry.path().to_string_lossy(), false).await;
+                    media_list.push(media);
+                }
             }
         }
 
-        sleep(Duration::from_secs(3));
+        if media_list.is_empty() {
+            error!(target: Target::file_mail(), channel = id;
+                "no playable files found under: <b><magenta>{:?}</></b>",
+                path_list
+            );
+        }
+
+        if config.storage.shuffle {
+            info!(target: Target::file_mail(), channel = id; "Shuffle files");
+            let mut rng = StdRng::from_os_rng();
+            media_list.shuffle(&mut rng);
+        } else {
+            media_list.sort_by(|d1, d2| d1.source.cmp(&d2.source));
+        }
+
+        for item in &mut media_list {
+            item.index = Some(index);
+
+            index += 1;
+        }
+
+        *manager.current_list.lock().await = media_list;
+
+        Self {
+            manager,
+            current_node: Media::default(),
+        }
+    }
+
+    pub async fn from_list(manager: &ChannelManager, list: Vec<Media>) -> Self {
+        *manager.current_list.lock().await = list;
+
+        Self {
+            manager: manager.clone(),
+            current_node: Media::default(),
+        }
+    }
+
+    async fn shuffle(&mut self) {
+        let mut rng = StdRng::from_os_rng();
+        let mut nodes = self.manager.current_list.lock().await;
+
+        nodes.shuffle(&mut rng);
+
+        for (index, item) in nodes.iter_mut().enumerate() {
+            item.index = Some(index);
+        }
+    }
+
+    async fn sort(&mut self) {
+        let mut nodes = self.manager.current_list.lock().await;
+
+        nodes.sort_by(|d1, d2| d1.source.cmp(&d2.source));
+
+        for (index, item) in nodes.iter_mut().enumerate() {
+            item.index = Some(index);
+        }
+    }
+}
+
+/// Create iterator for folder source
+impl FolderSource {
+    pub async fn next(&mut self) -> Option<Media> {
+        let config = self.manager.config.lock().await.clone();
+        let id = config.general.id;
+
+        if self.manager.current_index.load(Ordering::SeqCst)
+            < self.manager.current_list.lock().await.len()
+        {
+            let i = self.manager.current_index.load(Ordering::SeqCst);
+            self.current_node = self.manager.current_list.lock().await[i].clone();
+            let _ = self.current_node.add_probe(false).await.ok();
+            self.current_node
+                .add_filter(&config, &self.manager.filter_chain)
+                .await;
+            self.current_node.begin = Some(time_in_seconds(&config.channel.timezone));
+            self.manager.current_index.fetch_add(1, Ordering::SeqCst);
+        } else {
+            if config.storage.shuffle {
+                if config.general.generate.is_none() {
+                    info!(target: Target::file_mail(), channel = id; "Shuffle files");
+                }
+
+                self.shuffle().await;
+            } else {
+                if config.general.generate.is_none() {
+                    info!(target: Target::file_mail(), channel = id; "Sort files");
+                }
+
+                self.sort().await;
+            }
+
+            self.current_node = match self.manager.current_list.lock().await.first() {
+                Some(m) => m.clone(),
+                None => return None,
+            };
+            let _ = self.current_node.add_probe(false).await.ok();
+            self.current_node
+                .add_filter(&config, &self.manager.filter_chain)
+                .await;
+            self.current_node.begin = Some(time_in_seconds(&config.channel.timezone));
+            self.manager.current_index.store(1, Ordering::SeqCst);
+        }
+
+        Some(self.current_node.clone())
     }
 }

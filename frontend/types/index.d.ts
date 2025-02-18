@@ -1,3 +1,4 @@
+import { timezone } from 'dayjs/plugin/timezone.js';
 import type { JwtPayload } from 'jwt-decode'
 import type { AdvancedConfig } from '~/types/advanced_config'
 import type { PlayoutConfig, Playlist as Ply } from '~/types/playout_config'
@@ -7,7 +8,7 @@ export {}
 declare global {
     interface JwtPayloadExt extends JwtPayload {
         id: number
-        channel: number
+        channels: number[]
         role: string
     }
 
@@ -20,15 +21,9 @@ declare global {
         playlist: PlaylistExt
     }
 
-    interface LoginObj {
-        message: string
-        status: number
-        user?: {
-            id: number
-            mail: string
-            username: string
-            token
-        }
+    interface Token {
+        access: string
+        refresh: string
     }
 
     interface DataAuth {
@@ -43,7 +38,7 @@ declare global {
         public: string
         playlists: string
         storage: string
-        uts_offset?: number
+        timezone?: string
     }
 
     interface User {
@@ -152,5 +147,10 @@ declare global {
         elapsed: number
         shift: number
         title?: string
+    }
+
+    interface SplitTime {
+        id: number
+        val: number
     }
 }

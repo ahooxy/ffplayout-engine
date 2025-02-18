@@ -1,13 +1,10 @@
-use std::{
-    io::{stdin, stdout, Write},
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 #[cfg(target_family = "unix")]
 use std::os::unix::fs::MetadataExt;
 
 use clap::Parser;
-use rpassword::read_password;
+use inquire::{Confirm, CustomType, Password, PasswordDisplayMode, Text};
 use sqlx::{Pool, Sqlite};
 
 #[cfg(target_family = "unix")]
@@ -20,12 +17,10 @@ use crate::db::{
 use crate::utils::{
     advanced_config::AdvancedConfig,
     config::{OutputMode, PlayoutConfig},
-    copy_assets,
 };
 use crate::ARGS;
 
-#[cfg(target_family = "unix")]
-use crate::utils::db_path;
+use super::errors::ProcessError;
 
 #[derive(Parser, Debug, Default, Clone)]
 #[clap(version,
@@ -60,16 +55,19 @@ pub struct Args {
     pub storage: Option<String>,
 
     #[clap(long, env, help_heading = Some("Initial Setup"), help = "SMTP server for system mails")]
-    pub mail_smtp: Option<String>,
+    pub smtp_server: Option<String>,
 
-    #[clap(long, env, help_heading = Some("Initial Setup"), help = "Mail user for system mails")]
-    pub mail_user: Option<String>,
+    #[clap(long, env, help_heading = Some("Initial Setup"), help = "SMTP user for system mails")]
+    pub smtp_user: Option<String>,
 
-    #[clap(long, env, help_heading = Some("Initial Setup"), help = "Mail password for system mails")]
-    pub mail_password: Option<String>,
+    #[clap(long, env, help_heading = Some("Initial Setup"), help = "SMTP password for system mails")]
+    pub smtp_password: Option<String>,
 
-    #[clap(long, env, help_heading = Some("Initial Setup"), help = "Use TLS for system mails")]
-    pub mail_starttls: bool,
+    #[clap(long, env, help_heading = Some("Initial Setup"), help = "Use TLS for system SMTP", value_name = "TRUE/FALSE")]
+    pub smtp_starttls: Option<String>,
+
+    #[clap(long, env, help_heading = Some("Initial Setup"), help = "SMTP port for system mail")]
+    pub smtp_port: Option<u16>,
 
     #[clap(long, env, help_heading = Some("Initial Setup / General"), help = "Logging path")]
     pub logs: Option<String>,
@@ -77,10 +75,10 @@ pub struct Args {
     #[clap(long, env, help_heading = Some("Initial Setup / General"), help = "Path to public files, also HLS playlists")]
     pub public: Option<String>,
 
-    #[clap(long, help_heading = Some("Initial Setup / Playlist"), help = "Path to playlist, or playlist root folder.")]
+    #[clap(long, help_heading = Some("Initial Setup / Playlist"), help = "Path to playlist, or playlist root folder")]
     pub playlists: Option<String>,
 
-    #[clap(long, help_heading = Some("General"), help = "Add or update a global admin use")]
+    #[clap(long, help_heading = Some("General"), help = "Add or update a global admin user")]
     pub user_set: bool,
 
     #[clap(long, env, help_heading = Some("General"), help = "Path to database file")]
@@ -110,7 +108,7 @@ pub struct Args {
     )]
     pub import_advanced: Option<PathBuf>,
 
-    #[clap(long, help_heading = Some("General"), help = "import channel configuration from file.")]
+    #[clap(long, help_heading = Some("General"), help = "Import channel configuration from file")]
     pub import_config: Option<PathBuf>,
 
     #[clap(long, help_heading = Some("General"), help = "List available channel ids")]
@@ -123,12 +121,18 @@ pub struct Args {
         long,
         env,
         help_heading = Some("General"),
-        help = "Override logging level: trace, debug, println, warn, eprintln"
+        help = "Override logging level: trace, debug, info, warn, error"
     )]
     pub log_level: Option<String>,
 
     #[clap(long, env, help_heading = Some("General"), help = "Log to console")]
     pub log_to_console: bool,
+
+    #[clap(long, env, help_heading = Some("General"), help = "Keep log file for given days")]
+    pub log_backup_count: Option<usize>,
+
+    #[clap(long, env, help_heading = Some("General"), help = "Add timestamp to log line")]
+    pub log_timestamp: bool,
 
     #[clap(
         short,
@@ -138,10 +142,7 @@ pub struct Args {
         help = "Channels by ids to process (for export config, generate playlist, foreground running, etc.)",
         num_args = 1..,
     )]
-    pub channels: Option<Vec<i32>>,
-
-    #[clap(long, hide = true, help = "set fake time (for debugging)")]
-    pub fake_time: Option<String>,
+    pub channel: Option<Vec<i32>>,
 
     #[clap(
         short,
@@ -176,12 +177,6 @@ pub struct Args {
     #[clap(short, long, help_heading = Some("Playout"), help = "Play folder content")]
     pub folder: Option<PathBuf>,
 
-    #[clap(long, env, help_heading = Some("Playout"), help = "Keep log file for given days")]
-    pub log_backup_count: Option<usize>,
-
-    #[clap(long, env, help_heading = Some("Playout"), help = "Add timestamp to log line")]
-    pub log_timestamp: bool,
-
     #[clap(short, long, help_heading = Some("Playout"), help = "Set output mode: desktop, hls, null, stream")]
     pub output: Option<OutputMode>,
 
@@ -190,69 +185,53 @@ pub struct Args {
 
     #[clap(long, help_heading = Some("Playout"), help = "Skip validation process")]
     pub skip_validation: bool,
+
+    #[clap(long, hide = true, help = "Set fake time (for debugging)")]
+    pub fake_time: Option<String>,
+
+    #[clap(long, hide = true, help = "Send a test email (for debugging)")]
+    pub test_mail: bool,
 }
 
 fn global_user(args: &mut Args) {
-    let mut user = String::new();
-    let mut mail = String::new();
-
     if args.username.is_none() {
-        print!("Global admin: ");
-        stdout().flush().unwrap();
-
-        stdin()
-            .read_line(&mut user)
-            .expect("Did not enter a correct name?");
-
-        args.username = Some(user.trim().to_string());
+        args.username = Text::new("Username:").prompt().ok();
     }
 
     if args.password.is_none() {
-        print!("Password: ");
-        stdout().flush().unwrap();
-        let password = read_password();
-
-        args.password = password.ok();
+        args.password = Password::new("Password:")
+            .with_display_mode(PasswordDisplayMode::Masked)
+            .prompt()
+            .ok();
     }
 
     if args.mail.is_none() {
-        print!("Mail: ");
-        stdout().flush().unwrap();
-
-        stdin()
-            .read_line(&mut mail)
-            .expect("Did not enter a correct name?");
-
-        args.mail = Some(mail.trim().to_string());
+        args.mail = Text::new("Email:").prompt().ok();
     }
 }
 
-pub async fn run_args(pool: &Pool<Sqlite>) -> Result<(), i32> {
+fn clean_input(input: &str) -> String {
+    input
+        .trim()
+        .trim_matches(|c| c == '"' || c == '\'')
+        .to_string()
+}
+
+pub async fn init_args(pool: &Pool<Sqlite>) -> Result<bool, ProcessError> {
     let mut args = ARGS.clone();
+    let mut init = false;
 
     if !args.dump_advanced && !args.dump_config && !args.drop_db {
-        if let Err(e) = handles::db_migrate(pool).await {
-            panic!("{e}");
-        };
+        init = handles::db_migrate(pool).await?;
     }
 
     let channels = handles::select_related_channels(pool, None)
         .await
         .unwrap_or(vec![Channel::default()]);
 
-    let mut error_code = -1;
-
     if args.init {
         let check_user = handles::select_users(pool).await;
-
-        let mut storage = String::new();
-        let mut playlist = String::new();
-        let mut logging = String::new();
-        let mut public = String::new();
-        let mut mail_smtp = String::new();
-        let mut mail_user = String::new();
-        let mut mail_starttls = String::new();
-        let mut global = handles::select_global(pool).await.map_err(|_| 1)?;
+        let mut global = handles::select_global(pool).await?;
 
         if check_user.unwrap_or_default().is_empty() {
             global_user(&mut args);
@@ -261,147 +240,102 @@ pub async fn run_args(pool: &Pool<Sqlite>) -> Result<(), i32> {
         if let Some(st) = args.storage {
             global.storage = st;
         } else {
-            print!("Storage path [{}]: ", global.storage);
-            stdout().flush().unwrap();
-            stdin()
-                .read_line(&mut storage)
-                .expect("Did not enter a correct path?");
-
-            if !storage.trim().is_empty() {
-                global.storage = storage
-                    .trim()
-                    .trim_matches(|c| c == '"' || c == '\'')
-                    .to_string();
-            }
+            global.storage = Text::new("Storage path:")
+                .with_default(&global.storage)
+                .with_formatter(&clean_input)
+                .prompt()?;
         }
 
         if let Some(pl) = args.playlists {
-            global.playlists = pl
+            global.playlists = pl;
         } else {
-            print!("Playlist path [{}]: ", global.playlists);
-            stdout().flush().unwrap();
-            stdin()
-                .read_line(&mut playlist)
-                .expect("Did not enter a correct path?");
-
-            if !playlist.trim().is_empty() {
-                global.playlists = playlist
-                    .trim()
-                    .trim_matches(|c| c == '"' || c == '\'')
-                    .to_string();
-            }
+            global.playlists = Text::new("Playlist path:")
+                .with_default(&global.playlists)
+                .with_formatter(&clean_input)
+                .prompt()?;
         }
 
         if let Some(lp) = args.logs {
             global.logs = lp;
         } else {
-            print!("Logging path [{}]: ", global.logs);
-            stdout().flush().unwrap();
-            stdin()
-                .read_line(&mut logging)
-                .expect("Did not enter a correct path?");
-
-            if !logging.trim().is_empty() {
-                global.logs = logging
-                    .trim()
-                    .trim_matches(|c| c == '"' || c == '\'')
-                    .to_string();
-            }
+            global.logs = Text::new("Logging path:")
+                .with_default(&global.logs)
+                .with_formatter(&clean_input)
+                .prompt()?;
         }
 
         if let Some(p) = args.public {
             global.public = p;
         } else {
-            print!("Public (HLS) path [{}]: ", global.public);
-            stdout().flush().unwrap();
-            stdin()
-                .read_line(&mut public)
-                .expect("Did not enter a correct path?");
+            global.public = Text::new("Public (HLS) path:")
+                .with_default(&global.public)
+                .with_formatter(&clean_input)
+                .prompt()?;
+        }
 
-            if !public.trim().is_empty() {
-                global.public = public
-                    .trim()
-                    .trim_matches(|c| c == '"' || c == '\'')
-                    .to_string();
+        if let Some(smtp) = args.smtp_server {
+            global.smtp_server = smtp;
+        } else {
+            global.smtp_server = Text::new("SMTP server:")
+                .with_default(&global.smtp_server)
+                .with_formatter(&clean_input)
+                .prompt()?;
+        }
+
+        if let Some(user) = args.smtp_user {
+            global.smtp_user = user;
+        } else {
+            global.smtp_user = Text::new("SMTP user:")
+                .with_default(&global.smtp_user)
+                .with_formatter(&clean_input)
+                .prompt()?;
+        }
+
+        if let Some(pass) = args.smtp_password {
+            global.smtp_password = pass;
+        } else {
+            let pass = Password::new("SMTP password:")
+                .with_help_message("Hit enter to use existing one")
+                .with_display_mode(PasswordDisplayMode::Masked)
+                .prompt()?;
+
+            if !pass.is_empty() {
+                global.smtp_password = pass;
             }
         }
 
-        if let Some(smtp) = args.mail_smtp {
-            global.mail_smtp = smtp;
-        } else {
-            print!("SMTP server [{}]: ", global.mail_smtp);
-            stdout().flush().unwrap();
-            stdin()
-                .read_line(&mut mail_smtp)
-                .expect("Did not enter a correct SMTP server?");
-
-            if !mail_smtp.trim().is_empty() {
-                global.mail_smtp = mail_smtp
-                    .trim()
-                    .trim_matches(|c| c == '"' || c == '\'')
-                    .to_string();
-            }
-        }
-
-        if let Some(user) = args.mail_user {
-            global.mail_user = user;
-        } else {
-            print!("SMTP user [{}]: ", global.mail_user);
-            stdout().flush().unwrap();
-            stdin()
-                .read_line(&mut mail_user)
-                .expect("Did not enter a correct SMTP user?");
-
-            if !mail_user.trim().is_empty() {
-                global.mail_user = mail_user
-                    .trim()
-                    .trim_matches(|c| c == '"' || c == '\'')
-                    .to_string();
-            }
-        }
-
-        if let Some(pass) = args.mail_password {
-            global.mail_password = pass;
-        } else {
-            print!(
-                "SMTP password [{}]: ",
-                if global.mail_password.is_empty() {
-                    ""
-                } else {
-                    "********"
+        match args.smtp_starttls {
+            Some(val) => match val.to_lowercase().as_str() {
+                "true" => global.smtp_starttls = true,
+                "false" => global.smtp_starttls = false,
+                _ => {
+                    return Err(ProcessError::Input(
+                        "--smtp-starttls accept true or false".to_string(),
+                    ))
                 }
-            );
-            stdout().flush().unwrap();
-            let password = read_password().unwrap_or_default();
-
-            if !password.trim().is_empty() {
-                global.mail_password = password.trim().to_string();
+            },
+            None => {
+                global.smtp_starttls = Confirm::new("SMTP use TLS").with_default(false).prompt()?;
             }
         }
 
-        if args.mail_starttls {
-            global.mail_starttls = true;
+        // if args.smtp_starttls {
+        //     global.smtp_starttls = true;
+        // } else {
+        //     global.smtp_starttls = Confirm::new("SMTP use TLS").with_default(false).prompt()?;
+        // }
+
+        if let Some(port) = args.smtp_port {
+            global.smtp_port = port;
         } else {
-            print!(
-                "SMTP use TLS [{}]: ",
-                if global.mail_starttls { "yes" } else { "no" }
-            );
-            stdout().flush().unwrap();
-            stdin()
-                .read_line(&mut mail_starttls)
-                .expect("Did not enter a yes or no?");
-
-            if !mail_starttls.trim().is_empty() {
-                global.mail_starttls = mail_starttls.trim().to_lowercase().starts_with('y');
-            }
+            global.smtp_port = CustomType::<u16>::new("SMTP port:")
+                .with_default(global.smtp_port)
+                .prompt()?;
         }
 
-        if let Err(e) = handles::update_global(pool, global.clone()).await {
-            eprintln!("{e}");
-            error_code = 1;
-        };
+        handles::update_global(pool, global.clone()).await?;
 
-        let mut channel = handles::select_channel(pool, &1).await.unwrap();
+        let mut channel = handles::select_channel(pool, &1).await?;
         channel.public = global.public;
         channel.playlists = global.playlists;
         channel.storage = global.storage;
@@ -422,11 +356,7 @@ pub async fn run_args(pool: &Pool<Sqlite>) -> Result<(), i32> {
             channel.storage = storage_path.to_string_lossy().to_string();
         };
 
-        if let Err(e) = copy_assets(&storage_path).await {
-            eprintln!("{e}");
-        };
-
-        handles::update_channel(pool, 1, channel).await.unwrap();
+        handles::update_channel(pool, 1, channel).await?;
 
         #[cfg(target_family = "unix")]
         {
@@ -439,8 +369,6 @@ pub async fn run_args(pool: &Pool<Sqlite>) -> Result<(), i32> {
     }
 
     if let Some(username) = args.username {
-        error_code = 0;
-
         let chl: Vec<i32> = channels.clone().iter().map(|c| c.id).collect();
 
         let ff_user = User {
@@ -453,10 +381,7 @@ pub async fn run_args(pool: &Pool<Sqlite>) -> Result<(), i32> {
             token: None,
         };
 
-        if let Err(e) = handles::insert_or_update_user(pool, ff_user).await {
-            eprintln!("{e}");
-            error_code = 1;
-        };
+        handles::insert_or_update_user(pool, ff_user).await?;
 
         println!("Create/update global admin user \"{username}\" done...");
     }
@@ -474,100 +399,75 @@ pub async fn run_args(pool: &Pool<Sqlite>) -> Result<(), i32> {
                 .collect::<Vec<String>>()
                 .join("\n")
         );
-
-        error_code = 0;
     }
 
     if ARGS.dump_advanced {
-        if let Some(channels) = &ARGS.channels {
-            for id in channels {
-                match AdvancedConfig::dump(pool, *id).await {
-                    Ok(_) => {
-                        println!("Dump config to: advanced_{id}.toml");
-                        error_code = 0;
-                    }
-                    Err(e) => {
-                        eprintln!("Dump config: {e}");
-                        error_code = 1;
-                    }
+        if let Some(channel) = &ARGS.channel {
+            for id in channel {
+                if let Err(e) = AdvancedConfig::dump(pool, *id).await {
+                    return Err(ProcessError::Custom(format!("Dump config: {e}")));
                 };
             }
         } else {
-            eprintln!("Channel ID(s) needed! Use `--channels 1 ...`");
-            error_code = 1;
+            return Err(ProcessError::Custom(
+                "Channel ID(s) needed! Use `--channel 1 ...`".to_string(),
+            ));
         }
     }
 
     if ARGS.dump_config {
-        if let Some(channels) = &ARGS.channels {
-            for id in channels {
+        if let Some(channel) = &ARGS.channel {
+            for id in channel {
                 match PlayoutConfig::dump(pool, *id).await {
-                    Ok(_) => {
-                        println!("Dump config to: ffplayout_{id}.toml");
-                        error_code = 0;
-                    }
-                    Err(e) => {
-                        eprintln!("Dump config: {e}");
-                        error_code = 1;
-                    }
+                    Ok(_) => println!("Dump config to: ffplayout_{id}.toml"),
+                    Err(e) => return Err(ProcessError::Custom(format!("Dump config: {e}"))),
                 };
             }
         } else {
-            eprintln!("Channel ID(s) needed! Use `--channels 1 ...`");
-            error_code = 1;
+            return Err(ProcessError::Custom(
+                "Channel ID(s) needed! Use `--channel 1 ...`".to_string(),
+            ));
         }
     }
 
     if let Some(path) = &ARGS.import_advanced {
-        if let Some(channels) = &ARGS.channels {
-            for id in channels {
+        if let Some(channel) = &ARGS.channel {
+            for id in channel {
                 match AdvancedConfig::import(pool, *id, path).await {
-                    Ok(_) => {
-                        println!("Import config done...");
-                        error_code = 0;
-                    }
-                    Err(e) => {
-                        eprintln!("{e}");
-                        error_code = 1;
-                    }
+                    Ok(_) => println!("Import config done..."),
+                    Err(e) => return Err(ProcessError::Custom(format!("{e}"))),
                 };
             }
         } else {
-            eprintln!("Channel ID(s) needed! Use `--channels 1 ...`");
-            error_code = 1;
+            return Err(ProcessError::Custom(
+                "Channel ID(s) needed! Use `--channel 1 ...`".to_string(),
+            ));
         }
     }
 
     if let Some(path) = &ARGS.import_config {
-        if let Some(channels) = &ARGS.channels {
-            for id in channels {
+        if let Some(channel) = &ARGS.channel {
+            for id in channel {
                 match PlayoutConfig::import(pool, *id, path).await {
-                    Ok(_) => {
-                        println!("Import config done...");
-                        error_code = 0;
-                    }
-                    Err(e) => {
-                        eprintln!("{e}");
-                        error_code = 1;
-                    }
+                    Ok(_) => println!("Import config done..."),
+                    Err(e) => return Err(ProcessError::Custom(format!("{e}"))),
                 };
             }
         } else {
-            eprintln!("Channel ID(s) needed! Use `--channels 1 ...`");
-            error_code = 1;
+            return Err(ProcessError::Custom(
+                "Channel ID(s) needed! Use `--channel 1 ...`".to_string(),
+            ));
         }
     }
 
-    if error_code > -1 {
-        Err(error_code)
-    } else {
-        Ok(())
-    }
+    Ok(init)
 }
 
 #[cfg(target_family = "unix")]
 async fn update_permissions() {
-    let db_path = Path::new(db_path().unwrap());
+    use crate::db::DB_PATH;
+
+    let db_path = DB_PATH.as_ref().unwrap();
     let uid = nix::unistd::Uid::current();
     let parent_owner = db_path.parent().unwrap().metadata().unwrap().uid();
     let user = nix::unistd::User::from_uid(parent_owner.into())

@@ -1,14 +1,10 @@
 use actix_web::{get, web, App, Error, HttpResponse, Responder};
-// use actix_web_httpauth::extractors::bearer::BearerAuth;
 
 use serde_json::json;
 use sqlx::{sqlite::SqlitePoolOptions, Pool, Sqlite};
 
 use ffplayout::api::routes::login;
-use ffplayout::db::{
-    handles,
-    models::{init_globales, User},
-};
+use ffplayout::db::{handles, init_globales, models::User};
 use ffplayout::player::controller::ChannelManager;
 use ffplayout::utils::config::PlayoutConfig;
 // use ffplayout::validator;
@@ -44,7 +40,7 @@ async fn prepare_config() -> (PlayoutConfig, ChannelManager, Pool<Sqlite>) {
 
     let config = PlayoutConfig::new(&pool, 1).await.unwrap();
     let channel = handles::select_channel(&pool, &1).await.unwrap();
-    let manager = ChannelManager::new(Some(pool.clone()), channel, config.clone());
+    let manager = ChannelManager::new(pool.clone(), channel, config.clone()).await;
 
     (config, manager, pool)
 }
@@ -54,7 +50,7 @@ async fn get_handler() -> Result<impl Responder, Error> {
     Ok(HttpResponse::Ok())
 }
 
-#[actix_rt::test]
+#[actix_web::test]
 async fn test_get() {
     let srv = actix_test::start(|| App::new().service(get_handler));
 
@@ -64,15 +60,17 @@ async fn test_get() {
     assert!(res.status().is_success());
 }
 
-#[actix_rt::test]
+#[actix_web::test]
 async fn test_login() {
     let (_, _, pool) = prepare_config().await;
 
-    init_globales(&pool).await;
+    init_globales(&pool).await.unwrap();
 
     let srv = actix_test::start(move || {
         let db_pool = web::Data::new(pool.clone());
-        App::new().app_data(db_pool).service(login)
+        App::new()
+            .app_data(db_pool)
+            .service(web::scope("/auth").service(login))
     });
 
     let payload = json!({"username": "admin", "password": "admin"});

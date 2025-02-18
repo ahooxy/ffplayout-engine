@@ -1,20 +1,24 @@
 <template>
     <div class="w-full max-w-[800px] xs:pe-8">
         <h2 class="pt-3 text-3xl">{{ t('user.title') }}</h2>
-        <div v-if="authStore.role === 'GlobalAdmin'" class="flex flex-col xs:flex-row gap-2 w-full mb-5 mt-10">
-            <div class="grow">
-                <select v-model="selected" class="select select-bordered w-full max-w-xs" @change="onChange($event)">
-                    <option v-for="item in users" :key="item.username" :value="item.id">{{ item.username }}</option>
-                </select>
-            </div>
-            <div class="flex-none join">
-                <button class="join-item btn btn-primary" title="Add new User" @click="showUserModal = true">
-                    {{ t('user.add') }}
-                </button>
-                <button class="join-item btn btn-primary" title="Delete selected user" @click="deleteUser()">
-                    {{ t('user.delete') }}
-                </button>
-            </div>
+        <div v-if="authStore.role === 'global_admin'" class="w-full join max-w-md mt-10">
+            <select v-model="selected" class="join-item select select-bordered w-full" @change="onChange($event)">
+                <option v-for="item in users" :key="item.username" :value="item.id">{{ item.username }}</option>
+            </select>
+            <button
+                class="join-item btn btn-primary select-bordered"
+                title="Add new User"
+                @click="showUserModal = true"
+            >
+                <i class="bi-plus-lg" />
+            </button>
+            <button
+                class="join-item btn btn-primary select-bordered"
+                title="Delete selected user"
+                @click="deleteUser()"
+            >
+                <i class="bi-x-lg" />
+            </button>
         </div>
         <form v-if="configStore.configUser" class="mt-5" @submit.prevent="onSubmitUser">
             <label class="form-control w-full max-w-md">
@@ -50,7 +54,7 @@
                 <input v-model="confirmPass" type="password" class="input input-bordered w-full" />
             </label>
 
-            <div v-if="authStore.role === 'GlobalAdmin'" class="form-control w-full max-w-md mt-5">
+            <div v-if="authStore.role === 'global_admin'" class="form-control w-full max-w-md mt-5">
                 <Multiselect
                     v-model="configStore.configUser.channel_ids"
                     :options="configStore.channels"
@@ -149,7 +153,7 @@ const user = ref({
 } as User)
 
 onMounted(() => {
-    if (authStore.role === 'GlobalAdmin') {
+    if (authStore.role === 'global_admin') {
         getUsers()
     }
 })
@@ -226,7 +230,7 @@ async function addUser(add: boolean) {
         delete user.value.admin
 
         if (user.value.username && user.value.password && user.value.password === user.value.confirm) {
-            authStore.inspectToken()
+            await authStore.inspectToken()
             const update = await configStore.addNewUser(user.value)
             showUserModal.value = false
 
@@ -259,7 +263,7 @@ async function onSubmitUser() {
         }
     }
 
-    authStore.inspectToken()
+    await authStore.inspectToken()
     const update = await configStore.setUserConfig(configStore.configUser)
 
     if (update.status === 200) {

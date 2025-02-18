@@ -44,6 +44,7 @@
                         <input
                             v-model="configStore.playout.mail.subject"
                             type="text"
+                            name="subject"
                             class="input input-sm input-bordered w-full max-w-lg"
                         />
                     </label>
@@ -54,6 +55,7 @@
                         <input
                             v-model="configStore.playout.mail.recipient"
                             type="text"
+                            name="recipient"
                             class="input input-sm input-bordered w-full max-w-lg"
                         />
                     </label>
@@ -258,6 +260,7 @@
                     <input
                         v-model="configStore.playout.processing.logo"
                         type="text"
+                        name="logo"
                         class="input input-sm input-bordered w-full max-w-lg"
                     />
                     <div class="label">
@@ -286,6 +289,7 @@
                     <input
                         v-model="configStore.playout.processing.logo_scale"
                         type="text"
+                        name="logo_scale"
                         class="input input-sm input-bordered w-full max-w-md"
                     />
                     <div class="label">
@@ -301,6 +305,7 @@
                     <input
                         v-model="configStore.playout.processing.logo_position"
                         type="text"
+                        name="logo_position"
                         class="input input-sm input-bordered w-full max-w-md"
                     />
                     <div class="label">
@@ -391,6 +396,21 @@
                         }}</span>
                     </div>
                 </label>
+                <label class="form-control w-full flex-row mt-0">
+                    <input
+                        v-model="configStore.playout.processing.override_filter"
+                        type="checkbox"
+                        class="checkbox checkbox-sm me-1 mt-2"
+                    />
+                    <div class="label">
+                        <span class="label-text !text-md font-bold">Override custom Filter</span>
+                    </div>
+                </label>
+                <div v-if="configStore.playout.processing.override_filter" class="label py-0">
+                    <span class="text-sm select-text font-bold text-orange-500">{{
+                        t('config.processingOverrideFilter')
+                    }}</span>
+                </div>
                 <label class="form-control w-full mt-2">
                     <div class="flex flex-row">
                         <input
@@ -415,6 +435,7 @@
                     <input
                         v-model="configStore.playout.processing.vtt_dummy"
                         type="text"
+                        name="vtt_dummy"
                         class="input input-sm input-bordered w-full max-w-lg"
                     />
                     <div class="label">
@@ -483,6 +504,7 @@
                     <input
                         v-model="configStore.playout.playlist.day_start"
                         type="text"
+                        name="day_start"
                         class="input input-sm input-bordered w-full max-w-xs"
                         pattern="([01]?[0-9]|2[0-4]):[0-5][0-9]:[0-5][0-9]"
                     />
@@ -497,6 +519,7 @@
                     <input
                         v-model="configStore.playout.playlist.length"
                         type="text"
+                        name="length"
                         class="input input-sm input-bordered w-full max-w-xs"
                         pattern="([01]?[0-9]|2[0-4]):[0-5][0-9]:[0-5][0-9]"
                     />
@@ -549,6 +572,7 @@
                     <input
                         v-model="extensions"
                         type="text"
+                        name="extensions"
                         class="input input-sm input-bordered w-full max-w-lg"
                     />
                     <div class="label">
@@ -596,6 +620,7 @@
                     <input
                         v-model="configStore.playout.text.font"
                         type="text"
+                        name="font"
                         class="input input-sm input-bordered w-full max-w-lg"
                     />
                     <div class="label">
@@ -624,6 +649,7 @@
                     <input
                         v-model="configStore.playout.text.style"
                         type="text"
+                        name="style"
                         class="input input-sm input-bordered w-full truncate"
                     />
                     <div class="label">
@@ -637,6 +663,7 @@
                     <input
                         v-model="configStore.playout.text.regex"
                         type="text"
+                        name="regex"
                         class="input input-sm input-bordered w-full max-w-lg"
                     />
                     <div class="label">
@@ -721,20 +748,17 @@
     <GenericModal
         :title="t('config.restartTile')"
         :text="t('config.restartText')"
-        :show="showModal"
-        :modal-action="restart"
+        :show="configStore.showRestartModal"
+        :modal-action="configStore.restart"
     />
 </template>
 
 <script setup lang="ts">
-const config = useRuntimeConfig()
 const { t } = useI18n()
 
 const authStore = useAuth()
 const configStore = useConfig()
 const indexStore = useIndex()
-
-const showModal = ref(false)
 
 const logLevels = ['INFO', 'WARNING', 'ERROR']
 const processingMode = ['folder', 'playlist']
@@ -747,7 +771,7 @@ const extensions = computed({
 
     set(value: string) {
         configStore.playout.storage.extensions = value.replaceAll(' ', '').split(/,|;/)
-    }
+    },
 })
 
 const formatIgnoreLines = computed({
@@ -776,7 +800,7 @@ async function onSubmitPlayout() {
         })
             .then(async (response: any) => {
                 if (response === 'active') {
-                    showModal.value = true
+                    configStore.showRestartModal = true
                 }
 
                 await configStore.getPlayoutConfig()
@@ -787,21 +811,5 @@ async function onSubmitPlayout() {
     } else {
         indexStore.msgAlert('error', t('config.updatePlayoutFailed'), 2)
     }
-}
-
-async function restart(res: boolean) {
-    if (res) {
-        const channel = configStore.channels[configStore.i].id
-
-        await $fetch(`/api/control/${channel}/process/`, {
-            method: 'POST',
-            headers: { ...configStore.contentType, ...authStore.authHeader },
-            body: JSON.stringify({ command: 'restart' }),
-        }).catch((e) => {
-            indexStore.msgAlert('error', e.data, 3)
-        })
-    }
-
-    showModal.value = false
 }
 </script>

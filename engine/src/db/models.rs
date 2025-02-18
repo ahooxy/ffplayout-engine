@@ -1,12 +1,11 @@
 use std::{error::Error, fmt, str::FromStr};
 
-use once_cell::sync::OnceCell;
+use chrono_tz::Tz;
 use regex::Regex;
 use serde::{
     de::{self, Visitor},
     Deserialize, Serialize,
 };
-// use serde_with::{formats::CommaSeparator, serde_as, StringWithSeparator};
 use sqlx::{sqlite::SqliteRow, FromRow, Pool, Row, Sqlite};
 
 use crate::db::handles;
@@ -21,10 +20,11 @@ pub struct GlobalSettings {
     pub public: String,
     pub storage: String,
     pub shared: bool,
-    pub mail_smtp: String,
-    pub mail_user: String,
-    pub mail_password: String,
-    pub mail_starttls: bool,
+    pub smtp_server: String,
+    pub smtp_user: String,
+    pub smtp_password: String,
+    pub smtp_starttls: bool,
+    pub smtp_port: u16,
 }
 
 impl GlobalSettings {
@@ -33,7 +33,7 @@ impl GlobalSettings {
 
         match global_settings.await {
             Ok(g) => g,
-            Err(_) => GlobalSettings {
+            Err(_) => Self {
                 id: 0,
                 secret: None,
                 logs: String::new(),
@@ -41,27 +41,17 @@ impl GlobalSettings {
                 public: String::new(),
                 storage: String::new(),
                 shared: false,
-                mail_smtp: String::new(),
-                mail_user: String::new(),
-                mail_password: String::new(),
-                mail_starttls: false,
+                smtp_server: String::new(),
+                smtp_user: String::new(),
+                smtp_password: String::new(),
+                smtp_starttls: false,
+                smtp_port: 465,
             },
         }
     }
-
-    pub fn global() -> &'static GlobalSettings {
-        INSTANCE.get().expect("Config is not initialized")
-    }
 }
 
-static INSTANCE: OnceCell<GlobalSettings> = OnceCell::new();
-
-pub async fn init_globales(conn: &Pool<Sqlite>) {
-    let config = GlobalSettings::new(conn).await;
-    INSTANCE.set(config).unwrap();
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize, sqlx::FromRow)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Channel {
     #[serde(default = "default_id", skip_deserializing)]
     pub id: i32,
@@ -74,21 +64,50 @@ pub struct Channel {
     pub storage: String,
     pub last_date: Option<String>,
     pub time_shift: f64,
-    // not in use currently
-    #[sqlx(default)]
-    #[serde(default, skip_serializing)]
-    pub timezone: Option<String>,
-
-    #[sqlx(default)]
     #[serde(default)]
-    pub utc_offset: i32,
+    pub timezone: Option<Tz>,
+    #[serde(default)]
+    pub advanced_id: Option<i32>,
+}
+
+impl FromRow<'_, SqliteRow> for Channel {
+    fn from_row(row: &SqliteRow) -> sqlx::Result<Self> {
+        let mut timezone = None;
+
+        if let Some(tz) = row
+            .try_get::<String, _>("timezone")
+            .ok()
+            .and_then(|t: String| Tz::from_str(&t).ok())
+        {
+            timezone = Some(tz);
+        } else if let Some(tz) = iana_time_zone::get_timezone()
+            .ok()
+            .and_then(|t: String| Tz::from_str(&t).ok())
+        {
+            timezone = Some(tz);
+        }
+
+        Ok(Self {
+            id: row.try_get("id").unwrap_or_default(),
+            name: row.try_get("name").unwrap_or_default(),
+            preview_url: row.try_get("preview_url").unwrap_or_default(),
+            extra_extensions: row.try_get("extra_extensions").unwrap_or_default(),
+            active: row.try_get("active").unwrap_or_default(),
+            public: row.try_get("public").unwrap_or_default(),
+            playlists: row.try_get("playlists").unwrap_or_default(),
+            storage: row.try_get("storage").unwrap_or_default(),
+            last_date: row.try_get("last_date").unwrap_or_default(),
+            time_shift: row.try_get("time_shift").unwrap_or_default(),
+            timezone,
+            advanced_id: row.try_get("advanced_id").unwrap_or_default(),
+        })
+    }
 }
 
 fn default_id() -> i32 {
     1
 }
 
-// #[serde_as]
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct User {
     #[serde(skip_deserializing)]
@@ -96,10 +115,9 @@ pub struct User {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mail: Option<String>,
     pub username: String,
-    #[serde(skip_serializing, default = "empty_string")]
+    #[serde(skip_serializing, default = "String::new")]
     pub password: String,
     pub role_id: Option<i32>,
-    // #[serde_as(as = "StringWithSeparator::<CommaSeparator, i32>")]
     pub channel_ids: Option<Vec<i32>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
@@ -125,10 +143,6 @@ impl FromRow<'_, SqliteRow> for User {
     }
 }
 
-fn empty_string() -> String {
-    "".to_string()
-}
-
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct UserMeta {
     pub id: i32,
@@ -141,22 +155,19 @@ impl UserMeta {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Role {
     GlobalAdmin,
     ChannelAdmin,
     User,
+    #[default]
     Guest,
 }
 
 impl Role {
     pub fn set_role(role: &str) -> Self {
-        match role {
-            "global_admin" => Role::GlobalAdmin,
-            "channel_admin" => Role::ChannelAdmin,
-            "user" => Role::User,
-            _ => Role::Guest,
-        }
+        role.parse().unwrap_or(Self::Guest)
     }
 }
 
@@ -190,7 +201,7 @@ where
 {
     fn decode(
         value: sqlx::sqlite::SqliteValueRef<'r>,
-    ) -> Result<Role, Box<dyn Error + 'static + Send + Sync>> {
+    ) -> Result<Self, Box<dyn Error + 'static + Send + Sync>> {
         let value = <&str as sqlx::decode::Decode<sqlx::Sqlite>>::decode(value)?;
 
         Ok(value.parse()?)
@@ -238,7 +249,7 @@ where
 {
     struct StringOrNumberVisitor;
 
-    impl<'de> Visitor<'de> for StringOrNumberVisitor {
+    impl Visitor<'_> for StringOrNumberVisitor {
         type Value = String;
 
         fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -307,6 +318,8 @@ pub struct Configuration {
     #[serde(default)]
     pub processing_filter: String,
     #[serde(default)]
+    pub processing_override_filter: bool,
+    #[serde(default)]
     pub processing_vtt_enable: bool,
     #[serde(default)]
     pub processing_vtt_dummy: Option<String>,
@@ -369,6 +382,7 @@ impl Configuration {
             processing_audio_channels: config.processing.audio_channels,
             processing_volume: config.processing.volume,
             processing_filter: config.processing.custom_filter,
+            processing_override_filter: config.processing.override_filter,
             processing_vtt_enable: config.processing.vtt_enable,
             processing_vtt_dummy: config.processing.vtt_dummy,
             ingest_enable: config.ingest.enable,
@@ -405,7 +419,7 @@ fn default_channels() -> u8 {
     2
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, sqlx::FromRow)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, sqlx::FromRow)]
 pub struct AdvancedConfiguration {
     pub id: i32,
     pub channel_id: i32,
@@ -414,8 +428,6 @@ pub struct AdvancedConfiguration {
     pub encoder_input_param: Option<String>,
     pub ingest_input_param: Option<String>,
     pub filter_deinterlace: Option<String>,
-    pub filter_pad_scale_w: Option<String>,
-    pub filter_pad_scale_h: Option<String>,
     pub filter_pad_video: Option<String>,
     pub filter_fps: Option<String>,
     pub filter_scale: Option<String>,
@@ -436,4 +448,5 @@ pub struct AdvancedConfiguration {
     pub filter_apad: Option<String>,
     pub filter_volume: Option<String>,
     pub filter_split: Option<String>,
+    pub name: Option<String>,
 }

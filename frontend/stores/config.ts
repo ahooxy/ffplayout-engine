@@ -14,17 +14,17 @@ export const useConfig = defineStore('config', {
         playout: {} as PlayoutConfigExt,
         currentUser: 0,
         configUser: {} as User,
-        utcOffset: 0,
+        timezone: 'UTC',
         onetimeInfo: true,
         showPlayer: true,
+        showRestartModal: false,
     }),
 
     getters: {},
     actions: {
         async configInit() {
             const authStore = useAuth()
-
-            authStore.inspectToken()
+            await authStore.inspectToken()
 
             if (authStore.isLogin) {
                 await authStore.obtainUuid()
@@ -32,7 +32,7 @@ export const useConfig = defineStore('config', {
                     await this.getPlayoutConfig()
                     await this.getUserConfig()
 
-                    if (authStore.role === 'GlobalAdmin') {
+                    if (authStore.role === 'global_admin') {
                         await this.getAdvancedConfig()
                     }
                 })
@@ -69,7 +69,7 @@ export const useConfig = defineStore('config', {
                         throw new Error('User not found')
                     }
 
-                    this.utcOffset = objs[0].utc_offset
+                    this.timezone = objs[0].timezone
                     this.channels = objs
                     this.channelsRaw = cloneDeep(objs)
                     this.configCount = objs.length
@@ -88,7 +88,6 @@ export const useConfig = defineStore('config', {
                             public: '',
                             playlists: '',
                             storage: '',
-                            uts_offset: 0,
                         },
                     ]
 
@@ -158,13 +157,23 @@ export const useConfig = defineStore('config', {
             const authStore = useAuth()
             const channel = this.channels[this.i].id
 
-            const update = await fetch(`/api/playout/advanced/${channel}`, {
-                method: 'PUT',
-                headers: { ...this.contentType, ...authStore.authHeader },
-                body: JSON.stringify(this.advanced),
-            })
+            if (this.advanced?.id > 0) {
+                const update = await fetch(`/api/playout/advanced/${channel}`, {
+                    method: 'PUT',
+                    headers: { ...this.contentType, ...authStore.authHeader },
+                    body: JSON.stringify(this.advanced),
+                })
 
-            return update
+                return update
+            } else {
+                const update = await fetch(`/api/playout/advanced/${channel}/`, {
+                    method: 'POST',
+                    headers: { ...this.contentType, ...authStore.authHeader },
+                    body: JSON.stringify(this.advanced),
+                })
+
+                return update
+            }
         },
 
         async getUserConfig() {
@@ -209,6 +218,24 @@ export const useConfig = defineStore('config', {
             })
 
             return update
+        },
+
+        async restart(res: boolean) {
+            if (res) {
+                const authStore = useAuth()
+                const indexStore = useIndex()
+                const channel = this.channels[this.i].id
+
+                await $fetch(`/api/control/${channel}/process/`, {
+                    method: 'POST',
+                    headers: { ...this.contentType, ...authStore.authHeader },
+                    body: JSON.stringify({ command: 'restart' }),
+                }).catch((e) => {
+                    indexStore.msgAlert('error', e.data, 3)
+                })
+            }
+
+            this.showRestartModal = false
         },
     },
 })

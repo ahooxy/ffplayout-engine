@@ -17,15 +17,13 @@ out:
 
 */
 
-use std::{
-    io::{BufRead, BufReader},
-    process::{Command, Stdio},
-    sync::atomic::Ordering,
-    thread::{self, sleep},
-    time::{Duration, SystemTime},
-};
+use std::{process::Stdio, sync::atomic::Ordering};
 
 use log::*;
+use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    process::Command,
+};
 
 use crate::utils::{logging::log_line, task_runner};
 use crate::vec_strings;
@@ -38,24 +36,27 @@ use crate::{
             valid_stream, Media,
         },
     },
-    utils::{errors::ProcessError, logging::Target},
+    utils::{
+        errors::ServiceError,
+        logging::{fmt_cmd, Target},
+    },
 };
 
 /// Ingest Server for HLS
-fn ingest_to_hls_server(manager: ChannelManager) -> Result<(), ProcessError> {
-    let config = manager.config.lock().unwrap();
+async fn ingest_writer(manager: ChannelManager) -> Result<(), ServiceError> {
+    let config = manager.config.lock().await.clone();
     let id = config.general.channel_id;
     let playlist_init = manager.list_init.clone();
     let chain = manager.filter_chain.clone();
-    let mut error_count = 0;
-
-    let mut server_prefix = vec_strings!["-hide_banner", "-nostats", "-v", "level+info"];
     let stream_input = config.ingest.input_cmd.clone().unwrap();
-    let mut dummy_media = Media::new(0, "Live Stream", false);
-    dummy_media.unit = Ingest;
+    let mut server_prefix = vec_strings!["-hide_banner", "-nostats", "-v", "level+info"];
+    let mut dummy_media = Media::new(0, "Live Stream", false).await;
 
-    let is_terminated = manager.is_terminated.clone();
-    let ingest_is_running = manager.ingest_is_running.clone();
+    dummy_media.unit = Ingest;
+    dummy_media.add_filter(&config, &chain).await;
+
+    let is_alive = manager.is_alive.clone();
+    let ingest_is_alive = manager.ingest_is_alive.clone();
 
     if let Some(ingest_input_cmd) = &config.advanced.ingest.input_cmd {
         server_prefix.append(&mut ingest_input_cmd.clone());
@@ -74,139 +75,103 @@ fn ingest_to_hls_server(manager: ChannelManager) -> Result<(), ProcessError> {
         }
     }
 
+    let server_cmd = prepare_output_cmd(&config, server_prefix.clone(), &dummy_media.filter);
     let mut is_running;
 
     if let Some(url) = stream_input.iter().find(|s| s.contains("://")) {
-        if !is_free_tcp_port(id, url) {
-            manager.channel.lock().unwrap().active = false;
-            manager.stop_all();
-        } else {
-            info!(target: Target::file_mail(), channel = id; "Start ingest server, listening on: <b><magenta>{url}</></b>");
+        for num in 0..5 {
+            if is_free_tcp_port(url) {
+                break;
+            }
+
+            error!(target: Target::file_mail(), channel = id; "Address <b><magenta>{url}</></b> already in use!");
+
+            if num >= 4 {
+                manager.channel.lock().await.active = false;
+
+                return Err(ServiceError::Conflict(
+                    "Can't run ingest server!".to_string(),
+                ));
+            }
+
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         }
+
+        info!(target: Target::file_mail(), channel = id; "Start ingest server, listening on: <b><magenta>{url}</></b>");
     };
 
-    drop(config);
+    debug!(target: Target::file_mail(), channel = id;
+        "Server CMD: <bright-blue>ffmpeg {}</>",
+        fmt_cmd(&server_cmd)
+    );
 
     loop {
-        let config = manager.config.lock().unwrap().clone();
-        dummy_media.add_filter(&config, &chain);
-        let server_cmd = prepare_output_cmd(&config, server_prefix.clone(), &dummy_media.filter);
-        let timer = SystemTime::now();
-
-        debug!(target: Target::file_mail(), channel = id;
-            "Server CMD: <bright-blue>\"ffmpeg {}\"</>",
-            server_cmd.join(" ")
-        );
-
-        let proc_ctl = manager.clone();
-        let mut server_proc = match Command::new("ffmpeg")
+        let mut level = &config.logging.ffmpeg_level;
+        let mut server_proc = Command::new("ffmpeg")
             .args(server_cmd.clone())
             .stderr(Stdio::piped())
-            .spawn()
-        {
-            Err(e) => {
-                error!(target: Target::file_mail(), channel = id; "couldn't spawn ingest server: {e}");
-                panic!("couldn't spawn ingest server: {e}");
-            }
-            Ok(proc) => proc,
-        };
+            .kill_on_drop(true)
+            .spawn()?;
 
         let server_err = BufReader::new(server_proc.stderr.take().unwrap());
-        *manager.ingest.lock().unwrap() = Some(server_proc);
+        let mut lines = server_err.lines();
+
+        *manager.ingest.lock().await = Some(server_proc);
         is_running = false;
 
-        for line in server_err.lines() {
-            let line = line?;
-
-            if line.contains("rtmp") && line.contains("Unexpected stream") && !valid_stream(&line) {
+        while let Some(line) = lines.next_line().await? {
+            if line.contains("rtmp")
+                && (line.contains("Unexpected stream") || line.contains("App field don't match up"))
+                && !valid_stream(&line)
+            {
                 warn!(target: Target::file_mail(), channel = id; "Unexpected ingest stream: {line}");
 
-                if let Err(e) = proc_ctl.stop(Ingest) {
-                    error!(target: Target::file_mail(), channel = id; "{e}");
-                };
-            }
-
-            if !is_running && line.contains("Input #0") {
-                ingest_is_running.store(true, Ordering::SeqCst);
+                manager.stop(Ingest).await;
+            } else if !is_running && line.contains("Input #0") {
+                level = &config.logging.ingest_level;
+                ingest_is_alive.store(true, Ordering::SeqCst);
                 playlist_init.store(true, Ordering::SeqCst);
                 is_running = true;
 
                 info!(target: Target::file_mail(), channel = id; "Switch from {} to live ingest", config.processing.mode);
 
-                if let Err(e) = manager.stop(Decoder) {
-                    error!(target: Target::file_mail(), channel = id; "{e}");
-                }
+                manager.stop(Decoder).await;
             }
 
-            if ingest_is_running.load(Ordering::SeqCst) {
-                log_line(&line, &config.logging.ingest_level);
-            } else {
-                log_line(&line, &config.logging.ffmpeg_level);
-            }
+            log_line(id, &line, level);
         }
 
-        if ingest_is_running.load(Ordering::SeqCst) {
+        if ingest_is_alive.load(Ordering::SeqCst) {
             info!(target: Target::file_mail(), channel = id; "Switch from live ingest to {}", config.processing.mode);
         }
 
-        ingest_is_running.store(false, Ordering::SeqCst);
+        ingest_is_alive.store(false, Ordering::SeqCst);
 
-        if let Err(e) = manager.wait(Ingest) {
-            error!(target: Target::file_mail(), channel = id; "{e}")
-        }
+        manager.wait(Ingest).await;
 
-        if is_terminated.load(Ordering::SeqCst) {
+        if !is_alive.load(Ordering::SeqCst) {
             break;
-        }
-
-        if let Ok(elapsed) = timer.elapsed() {
-            if elapsed.as_millis() < 300 {
-                error_count += 1;
-
-                if error_count > 10 {
-                    error!(target: Target::file_mail(), channel = id; "Reach fatal error count in ingest, terminate channel!");
-                    manager.channel.lock().unwrap().active = false;
-                    manager.stop_all();
-                    break;
-                }
-            } else {
-                error_count = 0;
-            }
         }
     }
 
     Ok(())
 }
 
-/// HLS Writer
-///
-/// Write with single ffmpeg instance directly to a HLS playlist.
-pub fn write_hls(manager: ChannelManager) -> Result<(), ProcessError> {
-    let config = manager.config.lock()?.clone();
+async fn write(manager: &ChannelManager, ff_log_format: &str) -> Result<(), ServiceError> {
+    let config = manager.config.lock().await.clone();
+    let get_source = source_generator(manager.clone());
+    let ingest_is_alive = manager.ingest_is_alive.clone();
     let id = config.general.channel_id;
     let current_media = manager.current_media.clone();
-    let is_terminated = manager.is_terminated.clone();
+    let is_alive = manager.is_alive.clone();
 
-    let ff_log_format = format!("level+{}", config.logging.ffmpeg_level.to_lowercase());
+    let mut get_source = get_source.await;
 
-    let channel_mgr_2 = manager.clone();
-    let ingest_is_running = manager.ingest_is_running.clone();
-
-    let get_source = source_generator(manager.clone());
-
-    // spawn a thread for ffmpeg ingest server and create a channel for package sending
-    if config.ingest.enable {
-        thread::spawn(move || ingest_to_hls_server(channel_mgr_2));
-    }
-
-    let mut error_count = 0;
-
-    for node in get_source {
-        *current_media.lock().unwrap() = Some(node.clone());
+    while let Some(node) = get_source.next().await {
+        *current_media.lock().await = Some(node.clone());
         let ignore = config.logging.ignore_lines.clone();
-        let timer = SystemTime::now();
 
-        if is_terminated.load(Ordering::SeqCst) {
+        if !is_alive.load(Ordering::SeqCst) {
             break;
         }
 
@@ -215,7 +180,7 @@ pub fn write_hls(manager: ChannelManager) -> Result<(), ProcessError> {
             None => break,
         };
 
-        if !node.process.unwrap() {
+        if node.skip {
             continue;
         }
 
@@ -227,9 +192,9 @@ pub fn write_hls(manager: ChannelManager) -> Result<(), ProcessError> {
 
         if config.task.enable {
             if config.task.path.is_file() {
-                let channel_mgr_3 = manager.clone();
+                let manager3 = manager.clone();
 
-                thread::spawn(move || task_runner::run(channel_mgr_3));
+                tokio::spawn(task_runner::run(manager3));
             } else {
                 error!(target: Target::file_mail(), channel = id;
                     "<bright-blue>{:?}</> executable not exists!",
@@ -266,54 +231,61 @@ pub fn write_hls(manager: ChannelManager) -> Result<(), ProcessError> {
         let dec_cmd = prepare_output_cmd(&config, dec_prefix, &node.filter);
 
         debug!(target: Target::file_mail(), channel = id;
-            "HLS writer CMD: <bright-blue>\"ffmpeg {}\"</>",
-            dec_cmd.join(" ")
+            "HLS writer CMD: <bright-blue>ffmpeg {}</>",
+            fmt_cmd(&dec_cmd)
         );
 
-        let mut dec_proc = match Command::new("ffmpeg")
+        let mut dec_proc = Command::new("ffmpeg")
             .args(dec_cmd)
+            .kill_on_drop(true)
             .stderr(Stdio::piped())
-            .spawn()
-        {
-            Ok(proc) => proc,
-            Err(e) => {
-                error!(target: Target::file_mail(), channel = id; "couldn't spawn ffmpeg process: {e}");
-                panic!("couldn't spawn ffmpeg process: {e}")
-            }
-        };
+            .spawn()?;
 
         let dec_err = BufReader::new(dec_proc.stderr.take().unwrap());
-        *manager.decoder.lock().unwrap() = Some(dec_proc);
+        *manager.decoder.lock().await = Some(dec_proc);
 
-        if let Err(e) = stderr_reader(dec_err, ignore, Decoder, manager.clone()) {
-            error!(target: Target::file_mail(), channel = id; "{e:?}")
-        };
+        stderr_reader(dec_err, ignore, Decoder, id).await?;
 
-        if let Err(e) = manager.wait(Decoder) {
-            error!(target: Target::file_mail(), channel = id; "{e}");
-        }
+        manager.wait(Decoder).await;
 
-        while ingest_is_running.load(Ordering::SeqCst) {
-            sleep(Duration::from_secs(1));
-        }
-
-        if let Ok(elapsed) = timer.elapsed() {
-            if elapsed.as_millis() < 300 {
-                error_count += 1;
-
-                if error_count > 10 {
-                    error!(target: Target::file_mail(), channel = id; "Reach fatal error count, terminate channel!");
-                    break;
-                }
-            } else {
-                error_count = 0;
-            }
+        while ingest_is_alive.load(Ordering::SeqCst) {
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         }
     }
 
-    sleep(Duration::from_secs(1));
+    Ok(())
+}
 
-    manager.stop_all();
+/// HLS Writer
+///
+/// Write with single ffmpeg instance directly to a HLS playlist.
+pub async fn writer(manager: &ChannelManager, ff_log_format: &str) -> Result<(), ServiceError> {
+    let config = manager.config.lock().await.clone();
+
+    let manager2 = manager.clone();
+
+    let handle_ingest = if config.ingest.enable {
+        // spawn a thread for ffmpeg ingest server
+        Some(tokio::spawn(ingest_writer(manager2)))
+    } else {
+        None
+    };
+
+    tokio::select! {
+        result = async {
+            if let Some(f) = handle_ingest {
+                f.await?
+            } else {
+                Ok(())
+            }
+        }, if handle_ingest.is_some() => {
+            result?;
+        }
+
+        result = write(manager, ff_log_format) => {
+            result?;
+        }
+    }
 
     Ok(())
 }

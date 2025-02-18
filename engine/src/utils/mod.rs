@@ -1,19 +1,14 @@
 use std::{
     env, fmt,
-    net::TcpListener,
     path::{Path, PathBuf},
 };
 
-#[cfg(target_family = "unix")]
-use std::os::unix::fs::MetadataExt;
-
 use chrono::{format::ParseErrorKind, prelude::*};
-use faccess::PathExt;
 use log::*;
 use path_clean::PathClean;
 use rand::Rng;
 use regex::Regex;
-use tokio::{fs, process::Command};
+use tokio::{fs, net::TcpListener, process::Command};
 
 use serde::{
     de::{self, Visitor},
@@ -26,15 +21,15 @@ pub mod channels;
 pub mod config;
 pub mod control;
 pub mod errors;
-pub mod files;
 pub mod generator;
 pub mod logging;
+pub mod mail;
 pub mod playlist;
 pub mod system;
 pub mod task_runner;
 pub mod time_machine;
 
-use crate::db::models::GlobalSettings;
+use crate::db::GLOBAL_SETTINGS;
 use crate::player::utils::time_to_sec;
 use crate::utils::{errors::ServiceError, logging::log_file_path};
 use crate::ARGS;
@@ -67,7 +62,7 @@ where
 {
     struct StringOrNumberVisitor;
 
-    impl<'de> Visitor<'de> for StringOrNumberVisitor {
+    impl Visitor<'_> for StringOrNumberVisitor {
         type Value = Option<String>;
 
         fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -159,48 +154,8 @@ impl fmt::Display for TextFilter {
     }
 }
 
-pub fn db_path() -> Result<&'static str, Box<dyn std::error::Error>> {
-    if let Some(path) = ARGS.db.clone() {
-        let mut absolute_path = if path.is_absolute() {
-            path
-        } else {
-            env::current_dir()?.join(path)
-        }
-        .clean();
-
-        if absolute_path.is_dir() {
-            absolute_path = absolute_path.join("ffplayout.db");
-        }
-
-        if let Some(abs_path) = absolute_path.parent() {
-            if abs_path.writable() {
-                return Ok(Box::leak(
-                    absolute_path.to_string_lossy().to_string().into_boxed_str(),
-                ));
-            }
-
-            error!("Given database path is not writable!");
-        }
-    }
-
-    let sys_path = Path::new("/usr/share/ffplayout/db");
-    let mut db_path = "./ffplayout.db";
-
-    if sys_path.is_dir() && !sys_path.writable() {
-        error!("Path {} is not writable!", sys_path.display());
-    }
-
-    if sys_path.is_dir() && sys_path.writable() {
-        db_path = "/usr/share/ffplayout/db/ffplayout.db";
-    } else if Path::new("./assets").is_dir() {
-        db_path = "./assets/ffplayout.db";
-    }
-
-    Ok(db_path)
-}
-
 pub fn public_path() -> PathBuf {
-    let config = GlobalSettings::global();
+    let config = GLOBAL_SETTINGS.get().unwrap();
     let dev_path = env::current_dir()
         .unwrap_or_default()
         .join("frontend/.output/public/");
@@ -212,7 +167,7 @@ pub fn public_path() -> PathBuf {
         let public = PathBuf::from(p);
 
         public_path = if public.is_absolute() {
-            public.to_path_buf()
+            public
         } else {
             env::current_dir().unwrap_or_default().join(public)
         }
@@ -226,7 +181,7 @@ pub fn public_path() -> PathBuf {
 
 pub async fn read_log_file(channel_id: &i32, date: &str) -> Result<String, ServiceError> {
     let date_str = if date.is_empty() {
-        "".to_string()
+        String::new()
     } else {
         format!("_{date}")
     };
@@ -296,12 +251,12 @@ where
 }
 
 /// get a free tcp socket
-pub fn gen_tcp_socket(exclude_socket: String) -> Option<String> {
+pub async fn gen_tcp_socket(exclude_socket: &str) -> Option<String> {
     for _ in 0..100 {
-        let port = rand::thread_rng().gen_range(45321..54268);
+        let port = rand::rng().random_range(45321..54268);
         let socket = format!("127.0.0.1:{port}");
 
-        if socket != exclude_socket && TcpListener::bind(("127.0.0.1", port)).is_ok() {
+        if socket != exclude_socket && TcpListener::bind(("127.0.0.1", port)).await.is_ok() {
             return Some(socket);
         }
     }
@@ -315,64 +270,6 @@ pub fn round_to_nearest_ten(num: i64) -> i64 {
     } else {
         (num / 10) * 10
     }
-}
-
-pub async fn copy_assets(storage_path: &Path) -> Result<(), std::io::Error> {
-    if storage_path.is_dir() {
-        let target = storage_path.join("00-assets");
-        let mut dummy_source = Path::new("/usr/share/ffplayout/dummy.vtt");
-        let mut font_source = Path::new("/usr/share/ffplayout/DejaVuSans.ttf");
-        let mut logo_source = Path::new("/usr/share/ffplayout/logo.png");
-
-        if !dummy_source.is_file() {
-            dummy_source = Path::new("./assets/dummy.vtt")
-        }
-        if !font_source.is_file() {
-            font_source = Path::new("./assets/DejaVuSans.ttf")
-        }
-        if !logo_source.is_file() {
-            logo_source = Path::new("./assets/logo.png")
-        }
-
-        if !target.is_dir() {
-            let dummy_target = target.join("dummy.vtt");
-            let font_target = target.join("DejaVuSans.ttf");
-            let logo_target = target.join("logo.png");
-
-            fs::create_dir_all(&target).await?;
-            fs::copy(&dummy_source, &dummy_target).await?;
-            fs::copy(&font_source, &font_target).await?;
-            fs::copy(&logo_source, &logo_target).await?;
-
-            #[cfg(target_family = "unix")]
-            {
-                let uid = nix::unistd::Uid::current();
-                let parent_owner = storage_path.metadata().unwrap().uid();
-
-                if uid.is_root() && uid.to_string() != parent_owner.to_string() {
-                    let user = nix::unistd::User::from_uid(parent_owner.into())
-                        .unwrap_or_default()
-                        .unwrap();
-
-                    nix::unistd::chown(&target, Some(user.uid), Some(user.gid))?;
-
-                    if dummy_target.is_file() {
-                        nix::unistd::chown(&dummy_target, Some(user.uid), Some(user.gid))?;
-                    }
-                    if font_target.is_file() {
-                        nix::unistd::chown(&font_target, Some(user.uid), Some(user.gid))?;
-                    }
-                    if logo_target.is_file() {
-                        nix::unistd::chown(&logo_target, Some(user.uid), Some(user.gid))?;
-                    }
-                }
-            }
-        }
-    } else {
-        error!("Storage path {storage_path:?} not exists!");
-    }
-
-    Ok(())
 }
 
 /// Combined function to check if the program is running inside a container.

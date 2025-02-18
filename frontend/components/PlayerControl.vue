@@ -74,7 +74,7 @@
                                 {{ secToHMS(playlistStore.current.out) }}
 
                                 <template v-if="playlistStore.shift !== 0">
-                                    | <strong>{{ t('player.shift') }}:</strong> {{ secToHMS(playlistStore.shift) }} |
+                                    | <strong>{{ t('player.shift') }}:</strong> {{ secToHMS(playlistStore.shift) }}
                                 </template>
                             </div>
                             <div class="h-1/4 content-center leading-5 text-sm md:text-base">
@@ -313,7 +313,7 @@ function timeRemaining() {
 
 async function clock() {
     async function setTime(resolve: any) {
-        timeStr.value = $dayjs().utcOffset(configStore.utcOffset).format('HH:mm:ss')
+        timeStr.value = $dayjs().tz(configStore.timezone).format('HH:mm:ss')
         timer.value = setTimeout(() => setTime(resolve), 1000)
     }
     return new Promise((resolve) => setTime(resolve))
@@ -343,7 +343,7 @@ const controlProcess = throttle(async (state: string) => {
         .catch((e) => {
             indexStore.msgAlert('error', e.data, 3)
         })
-}, 800)
+}, 2000)
 
 const controlPlayout = throttle(async (state: string) => {
     /*
@@ -361,5 +361,5 @@ const controlPlayout = throttle(async (state: string) => {
     }).catch((e) => {
         indexStore.msgAlert('error', e.data, 3)
     })
-}, 800)
+}, 1000)
 </script>

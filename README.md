@@ -5,9 +5,9 @@
 
 ![player](/docs/images/player.png)
 
-[ffplayout](/ffplayout-engine/README.md) is a 24/7 broadcasting solution. It can playout a folder containing audio or video clips, or play a *JSON* playlist for each day, keeping the current playlist editable.
+ffplayout is a 24/7 broadcasting solution. It can playout a folder containing audio or video clips, or play a *JSON* playlist for each day, keeping the current playlist editable.
 
-The ffplayout applications are mostly designed to run as system services on Linux. But in general they should run on any platform supported by Rust.
+The application is mostly designed to run as system service on Linux. But in general it should run on any platform supported by Rust.
 
 Check the [releases](https://github.com/ffplayout/ffplayout/releases/latest) for pre compiled version.
 
@@ -123,14 +123,4 @@ If you are in playlist mode and move backwards or forwards in time, the time shi
 
 ## Note
 This project includes the DejaVu font, which are licensed under the [Bitstream Vera Fonts License](/assets/FONT_LICENSE.txt).
-
------
-
-## Sponsoring
-
-If you like this project and would like to make a donation, please use one of the options provided.
-Please note that donations are not intended to get support or features! Donations are only a sign of appreciation.
-
-### Backers
-
-[![](https://opencollective.com/ffplayout/backers.svg?width=800&button=true)](https://opencollective.com/ffplayout)
+ve.com/ffplayout/backers.svg?width=800&button=true)](https://opencollective.com/ffplayout)

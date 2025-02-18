@@ -89,6 +89,8 @@ export default {
         infinitInfo: 'O playout é executado no modo infinito. Nenhuma informação baseada em tempo é possível',
         generateDone: 'Gerar lista de reprodução concluída...',
         dateYesterday: 'A hora atual é anterior à hora de início da lista de reprodução!',
+        splitVideo: 'Split Video',
+        cuts: 'Cuts',
     },
     media: {
         notExists: 'O armazenamento não existe!',
@@ -197,6 +199,7 @@ export default {
         processingAudioIndex: 'Qual linha de áudio usar, -1 para todas.',
         processingAudioChannels: 'Defina a contagem de canais de áudio, se o áudio tiver mais canais do que estéreo.',
         processingCustomFilter: 'Adicione filtros personalizados ao processamento. As saídas de filtro devem terminar com [c_v_out] para filtros de vídeo e [c_a_out] para filtros de áudio.',
+        processingOverrideFilter: 'Attention: This option overwrites all standard filters, i.e. automatic format correction no longer takes place, the command must be structured as follows: -filter_complex [0:v]fps=25,scale=1280:-1[vout];[0:a:0]volume=0.5[aout] -map [vout] -map [aout]',
         processingVTTEnable: 'VTT só pode ser usado no modo HLS e apenas se houver arquivos *.vtt com o mesmo nome do arquivo de vídeo.',
         processingVTTDummy: 'Um espaço reservado é necessário se não houver arquivo vtt.',
         ingestHelp: `Execute um servidor para um fluxo de ingestão. Este fluxo substituirá o streaming normal até que termine. Há apenas um mecanismo de autenticação simples que verifica se o nome do fluxo está correto.`,
@@ -228,6 +231,7 @@ export default {
         playlistPath: 'Playlist Path',
         storagePath: 'Storage Path',
         sharedStorage: 'O ffplayout é executado dentro de um contêiner; use a mesma raiz de armazenamento para todos os canais!',
+        timezone: 'Timezone',
     },
     user: {
         title: 'Configuração de usuário',
