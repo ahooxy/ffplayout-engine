@@ -719,20 +719,24 @@ pub fn seek_and_length(config: &PlayoutConfig, node: &mut Media) -> Vec<String> 
             source_cmd.append(&mut vec_strings!["-ss", node.seek]);
         }
 
-        if vtt_file.is_file() {
-            if loop_count > 1 {
+        if let Some(vtt_path) = if vtt_file.is_file() {
+            Some(vtt_file.to_string_lossy())
+        } else if vtt_dummy.is_file() {
+            Some(vtt_dummy.to_string_lossy())
+        } else {
+            error!("<b><magenta>{:?}</></b> not found!", vtt_dummy);
+            None
+        } {
+            if vtt_file.is_file() && loop_count > 1 {
                 source_cmd.append(&mut vec_strings!["-stream_loop", loop_count]);
             }
 
-            source_cmd.append(&mut vec_strings!["-i", vtt_file.to_string_lossy()]);
-
-            if node.duration > node.out || remote_source || loop_count > 1 {
-                source_cmd.append(&mut vec_strings!["-t", node.out - node.seek]);
-            }
-        } else if vtt_dummy.is_file() {
-            source_cmd.append(&mut vec_strings!["-i", vtt_dummy.to_string_lossy()]);
-        } else {
-            error!("<b><magenta>{:?}</></b> not found!", vtt_dummy);
+            source_cmd.append(&mut vec_strings![
+                "-i",
+                vtt_path,
+                "-t",
+                node.out - node.seek
+            ]);
         }
     }
 
