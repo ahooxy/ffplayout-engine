@@ -2,8 +2,8 @@ use std::{
     path::Path,
     process::Stdio,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
     time::Instant,
 };
@@ -19,10 +19,11 @@ use tokio::{
 
 use crate::player::filter::FilterType::Audio;
 use crate::player::utils::{
-    is_close, is_remote, loop_image, sec_to_time, seek_and_length, time_to_sec, JsonPlaylist, Media,
+    JsonPlaylist, Media, is_close, is_remote, loop_image, sec_to_time, seek_and_length,
+    time_in_seconds, time_to_sec,
 };
 use crate::utils::{
-    config::{OutputMode::Null, PlayoutConfig, FFMPEG_IGNORE_ERRORS, IMAGE_FORMAT},
+    config::{FFMPEG_IGNORE_ERRORS, IMAGE_FORMAT, OutputMode::Null, PlayoutConfig},
     errors::ProcessError,
     logging::Target,
 };
@@ -35,10 +36,10 @@ use crate::vec_strings;
 /// - Check if Metadata exists
 /// - Check if the file is not silent
 async fn check_media(
+    config: &PlayoutConfig,
     mut node: Media,
     pos: usize,
     begin: f64,
-    config: &PlayoutConfig,
 ) -> Result<(), ProcessError> {
     let id = config.general.channel_id;
     let mut dec_cmd = vec_strings!["-hide_banner", "-nostats", "-v", "level+info"];
@@ -137,10 +138,10 @@ async fn check_media(
 
     if !error_list.is_empty() {
         error!(target: Target::file_mail(), channel = id;
-            "<bright black>[Validator]</> ffmpeg error on position <yellow>{pos}</> - {}: <b><magenta>{}</></b>: {}",
+            "<span class=\"log-gray\">[Validator]</span> ffmpeg error on position <span class=\"log-number\">{pos}</span> - {}: <span class=\"log-addr\">{}</span>: {}",
             sec_to_time(begin),
             node.source,
-            error_list.join("\n")
+            error_list.join("\n    ")
         );
     }
 
@@ -183,7 +184,7 @@ async fn check_vtt(source: &str, duration: f64, channel_id: i32) -> Result<(), P
 
             if last_sec > duration {
                 error!(target: Target::file_mail(), channel = channel_id;
-                    "[Validation] Webvtt (<b><magenta>{vtt_path:?}</></b>) is longer, <yellow>{timestamp}</> versus <yellow>{}</> video duration.",
+                    "<span class=\"log-gray\">[Validation]</span> Webvtt <span class=\"log-addr\">{vtt_path:?}</span> is longer, <span class=\"log-number\">{timestamp}</span> versus <span class=\"log-number\">{}</span> video duration.",
                     sec_to_time(duration)
                 );
             }
@@ -216,10 +217,15 @@ pub async fn validate_playlist(
 
     let mut length = config.playlist.length_sec.unwrap();
     let mut begin = config.playlist.start_sec.unwrap();
+    let mut time_sec = time_in_seconds(&config.channel.timezone);
 
     length += begin;
 
-    debug!(target: Target::file_mail(), channel = id; "Validate playlist from: <yellow>{date}</>");
+    if time_sec < config.playlist.start_sec.unwrap_or_default() {
+        time_sec += 86400.0;
+    }
+
+    debug!(target: Target::file_mail(), channel = id; "Validate playlist from: <span class=\"log-number\">{date}</span>");
     let timer = Instant::now();
 
     for (index, item) in playlist.program.iter_mut().enumerate() {
@@ -229,57 +235,71 @@ pub async fn validate_playlist(
 
         let pos = index + 1;
 
+        if begin < time_sec {
+            // Do not validate clips that are being passed.
+            begin += item.out - item.seek;
+            continue;
+        }
+
         if !is_remote(&item.source) {
             if item.audio.is_empty() {
                 if let Err(e) = item.add_probe(false).await {
                     error!(target: Target::file_mail(), channel = id;
-                        "[Validation] Error on position <yellow>{pos:0>3}</> - <yellow>{}</>: {e}",
+                        "<span class=\"log-gray\">[Validation]</span> Error on position <span class=\"log-number\">{pos:0>3}</span> - <span class=\"log-number\">{}</span>: {e}",
                         sec_to_time(begin)
                     );
                 }
             } else if let Err(e) = item.add_probe(true).await {
                 error!(target: Target::file_mail(), channel = id;
-                    "[Validation] Error on position <yellow>{pos:0>3}</> - <yellow>{}</>: {e}",
+                    "<span class=\"log-gray\">[Validation]</span> Error on position <span class=\"log-number\">{pos:0>3}</span> - <span class=\"log-number\">{}</span>: {e}",
                     sec_to_time(begin)
                 );
             }
         }
 
         if item.probe.is_some() {
-            if let Err(e) = check_media(item.clone(), pos, begin, &config).await {
-                error!(target: Target::file_mail(), channel = id; "{e}");
-            } else if config.general.validate {
-                debug!(target: Target::file_mail(), channel = id;
-                    "[Validation] Source at <yellow>{}</>, seems fine: <b><magenta>{}</></b>",
-                    sec_to_time(begin),
-                    item.source
-                );
-            } else if let Ok(mut list) = current_list.try_lock() {
-                // Filter out same item in current playlist, then add the probe to it.
-                // Check also if duration differs with playlist value, log error if so and adjust that value.
-                list.iter_mut().filter(|list_item| list_item.source == item.source).for_each(|o| {
-                    o.probe.clone_from(&item.probe);
+            match check_media(&config, item.clone(), pos, begin).await {
+                Err(e) => {
+                    error!(target: Target::file_mail(), channel = id; "{e}");
+                }
+                Ok(()) => {
+                    if config.general.validate {
+                        debug!(
+                            target: Target::file_mail(), channel = id;
+                            "<span class=\"log-gray\">[Validation]</span> Source at <span class=\"log-number\">{}</span>, seems fine: <span class=\"log-addr\">{}</span>",
+                            sec_to_time(begin),
+                            item.source
+                        );
+                    } else if let Ok(mut list) = current_list.try_lock() {
+                        // Filter out same item in current playlist, then add the probe to it.
+                        // Check also if duration differs with playlist value, log error if so and adjust that value.
+                        for o in list.iter_mut().filter(|o| o.source == item.source) {
+                            o.probe.clone_from(&item.probe);
 
-                    if let Some(dur) =
-                        item.probe.as_ref().and_then(|f| f.format.duration)
-                    {
-                        let probe_duration = dur;
+                            if let Some(probe_duration) =
+                                item.probe.as_ref().and_then(|f| f.format.duration)
+                            {
+                                if !is_close(o.duration, probe_duration, 1.2) {
+                                    error!(
+                                        target: Target::file_mail(),
+                                        channel = id;
+                                        "<span class=\"log-gray\">[Validation]</span> File duration (at: <span class=\"log-number\">{}</span>) differs from playlist value. File duration: <span class=\"log-number\">{}</span>, playlist value: <span class=\"log-number\">{}</span>, source <span class=\"log-addr\">{}</span>",
+                                        sec_to_time(o.begin.unwrap_or_default()),
+                                        sec_to_time(probe_duration),
+                                        sec_to_time(o.duration),
+                                        o.source
+                                    );
+                                    o.duration = probe_duration;
+                                }
+                            }
 
-                        if !is_close(o.duration, probe_duration, 1.2) {
-                            error!(target: Target::file_mail(), channel = id;
-                                "[Validation] File duration (at: <yellow>{}</>) differs from playlist value. File duration: <yellow>{}</>, playlist value: <yellow>{}</>, source <b><magenta>{}</></b>",
-                                sec_to_time(o.begin.unwrap_or_default()), sec_to_time(probe_duration), sec_to_time(o.duration), o.source
-                            );
-
-                            o.duration = probe_duration;
+                            if o.audio == item.audio && item.probe_audio.is_some() {
+                                o.probe_audio.clone_from(&item.probe_audio);
+                                o.duration_audio = item.duration_audio;
+                            }
                         }
                     }
-
-                    if o.audio == item.audio && item.probe_audio.is_some() {
-                        o.probe_audio.clone_from(&item.probe_audio);
-                        o.duration_audio = item.duration_audio;
-                    }
-                });
+                }
             }
 
             if config.processing.vtt_enable {
@@ -294,20 +314,20 @@ pub async fn validate_playlist(
 
     if !config.playlist.infinit && length > begin + 1.2 {
         error!(target: Target::file_mail(), channel = id;
-            "[Validation] Playlist from <yellow>{date}</> not long enough, <yellow>{}</> needed!",
+            "<span class=\"log-gray\">[Validation]</span> Playlist from <span class=\"log-number\">{date}</span> not long enough, <span class=\"log-number\">{}</span> needed!",
             sec_to_time(length - begin),
         );
     }
 
     if config.general.validate {
         info!(target: Target::file_mail(), channel = id;
-            "[Validation] Playlist length: <yellow>{}</>",
+            "<span class=\"log-gray\">[Validation]</span> Playlist length: <span class=\"log-number\">{}</span>",
             sec_to_time(begin - config.playlist.start_sec.unwrap())
         );
     }
 
     debug!(target: Target::file_mail(), channel = id;
-        "Validation done, in <yellow>{:.3?}</>, playlist length: <yellow>{}</> ...",
+        "Validation done, in <span class=\"log-number\">{:.3?}</span>, playlist length: <span class=\"log-number\">{}</span> ...",
         timer.elapsed(),
         sec_to_time(begin - config.playlist.start_sec.unwrap())
     );

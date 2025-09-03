@@ -7,14 +7,14 @@ use tokio::{
 };
 
 use crate::utils::{
-    config::{PlayoutConfig, FFMPEG_IGNORE_ERRORS, FFMPEG_UNRECOVERABLE_ERRORS},
-    logging::{log_line, Target},
+    config::{FFMPEG_IGNORE_ERRORS, FFMPEG_UNRECOVERABLE_ERRORS, PlayoutConfig},
+    logging::{Target, log_line},
 };
 use crate::vec_strings;
 use crate::{
     player::{
         controller::{ChannelManager, ProcessUnit::*},
-        utils::{is_free_tcp_port, valid_stream, Media},
+        utils::{Media, is_free_tcp_port, valid_stream},
     },
     utils::{errors::ServiceError, logging::fmt_cmd},
 };
@@ -108,7 +108,7 @@ pub async fn ingest_server(
     }
 
     debug!(target: Target::file_mail(), channel = id;
-        "Server CMD: <bright-blue>ffmpeg {}</>",
+        "Server CMD: <span class=\"log-cmd\">ffmpeg {}</span>",
         fmt_cmd(&server_cmd)
     );
 
@@ -118,7 +118,7 @@ pub async fn ingest_server(
                 break;
             }
 
-            error!(target: Target::file_mail(), channel = id; "Address <b><magenta>{url}</></b> already in use!");
+            error!(target: Target::file_mail(), channel = id; "Address <span class=\"log-addr\">{url}</span> already in use!");
 
             manager.stop(Ingest).await;
 
@@ -131,7 +131,7 @@ pub async fn ingest_server(
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         }
 
-        info!(target: Target::file_mail(), channel = id; "Start ingest server, listening on: <b><magenta>{url}</></b>");
+        info!(target: Target::file_mail(), channel = id; "Start ingest server, listening on: <span class=\"log-addr\">{url}</span>");
     };
 
     while is_alive.load(Ordering::SeqCst) {
@@ -147,7 +147,7 @@ pub async fn ingest_server(
         let ingest_stdout = server_proc.stdout.take().unwrap();
         let server_err = BufReader::new(server_proc.stderr.take().unwrap());
 
-        *manager.ingest_stdout.lock().await = Some(ingest_stdout);
+        *manager.ingest_reader.lock().await = Some(ingest_stdout);
         *manager.ingest.lock().await = Some(server_proc);
 
         server_monitor(id, level, ignore, server_err, proc_ctl).await?;

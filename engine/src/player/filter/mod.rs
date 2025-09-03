@@ -10,7 +10,7 @@ pub mod v_drawtext;
 
 use crate::player::{
     controller::ProcessUnit::{self, *},
-    utils::{calc_aspect, custom_format, fps_calc, fraction, is_close, Media},
+    utils::{Media, calc_aspect, custom_format, fps_calc, fraction, is_close},
 };
 use crate::utils::{
     config::{OutputMode::*, PlayoutConfig},
@@ -266,7 +266,7 @@ impl Filters {
             let v_map = "0:v".to_string();
 
             if !o_map.contains(&v_map) {
-                o_map.append(&mut vec_strings!["-map", v_map]);
+                o_map.splice(0..0, vec_strings!["-map", v_map]);
             };
         }
 
@@ -398,6 +398,8 @@ fn fps(config: &PlayoutConfig, chain: &mut Filters, fps: f64) {
 }
 
 fn scale(config: &PlayoutConfig, chain: &mut Filters, width: Option<i64>, height: Option<i64>) {
+    // could be an option: out_color_matrix=bt709:out_primaries=bt709:out_transfer=bt709
+    // but then the scale filter must always be applied.
     if let Some(scale) = &config.advanced.filter.scale {
         chain.add(
             &custom_format(
@@ -491,9 +493,10 @@ fn overlay(config: &PlayoutConfig, chain: &mut Filters, node: &mut Media) {
             .replace(':', "\\\\:");
 
         let movie = match &config.advanced.filter.logo {
-            Some(logo) => {
-                custom_format(logo, &[logo_path, config.processing.logo_opacity.to_string()])
-        },
+            Some(logo) => custom_format(
+                logo,
+                &[logo_path, config.processing.logo_opacity.to_string()],
+            ),
             None => format!(
                 "movie={logo_path}:loop=0,setpts=N/(FRAME_RATE*TB),format=rgba,colorchannelmixer=aa={}",
                 config.processing.logo_opacity,
@@ -711,7 +714,9 @@ pub async fn filter_chains(
 ) -> Filters {
     let mut filters = Filters::new(config.clone(), node.unit, 0);
 
-    if config.processing.override_filter {
+    // When the 'custom_filter' value is empty and the 'override_filter' value is active,
+    // the filter command becomes corrupt. This is why we need to check both values.
+    if config.processing.override_filter && !config.processing.custom_filter.is_empty() {
         //override hole filtering
         if node.unit == Ingest && !config.ingest.custom_filter.is_empty() {
             filters.output_chain = split(&config.ingest.custom_filter).unwrap_or_default();
@@ -804,8 +809,8 @@ pub async fn filter_chains(
             {
                 extend_audio(config, &mut filters, node, i);
             } else if node.unit == Decoder && !node.source.contains("color=c=") {
-                warn!(target: Target::file_mail(), channel = config.general.channel_id;
-                    "Missing audio track (id {i}) from <b><magenta>{}</></b>",
+                error!(target: Target::file_mail(), channel = config.general.channel_id;
+                    "Missing audio track (id {i}) from <span class=\"log-addr\">{}</span>",
                     node.source
                 );
 

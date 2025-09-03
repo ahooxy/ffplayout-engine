@@ -1,6 +1,6 @@
 use log::*;
 use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, DisplayFromStr};
+use serde_with::{DisplayFromStr, serde_as};
 use tokio::process;
 
 use crate::utils::errors::ProcessError;
@@ -53,7 +53,7 @@ impl std::fmt::Display for FfProbeError {
             FfProbeError::Status(o) => {
                 write!(
                     f,
-                    "ffprobe exited with {} <b><magenta>{}</></b>",
+                    "ffprobe exited with {} <span class=\"log-addr\">{}</span>",
                     o.status,
                     String::from_utf8_lossy(&o.stderr).trim()
                 )

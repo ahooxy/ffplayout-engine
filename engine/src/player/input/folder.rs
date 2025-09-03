@@ -3,12 +3,12 @@ use std::sync::atomic::Ordering;
 use async_walkdir::WalkDir;
 
 use log::*;
-use rand::{rngs::StdRng, seq::SliceRandom, SeedableRng};
+use rand::{SeedableRng, rngs::StdRng, seq::SliceRandom};
 use tokio_stream::StreamExt;
 
 use crate::player::{
     controller::ChannelManager,
-    utils::{include_file_extension, time_in_seconds, Media},
+    utils::{Media, include_file_extension, time_in_seconds},
 };
 use crate::utils::{config::PlayoutConfig, logging::Target};
 
@@ -42,7 +42,7 @@ impl FolderSource {
 
         for path in &path_list {
             if !path.is_dir() {
-                error!(target: Target::file_mail(), channel = id; "Path not exists: <b><magenta>{path:?}</></b>");
+                error!(target: Target::file_mail(), channel = id; "Path not exists: <span class=\"log-addr\">{path:?}</span>");
             }
 
             let mut entries = WalkDir::new(path);
@@ -57,7 +57,7 @@ impl FolderSource {
 
         if media_list.is_empty() {
             error!(target: Target::file_mail(), channel = id;
-                "no playable files found under: <b><magenta>{:?}</></b>",
+                "no playable files found under: <span class=\"log-addr\">{:?}</span>",
                 path_list
             );
         }
@@ -118,7 +118,7 @@ impl FolderSource {
 /// Create iterator for folder source
 impl FolderSource {
     pub async fn next(&mut self) -> Option<Media> {
-        let config = self.manager.config.lock().await.clone();
+        let config = self.manager.config.read().await.clone();
         let id = config.general.id;
 
         if self.manager.current_index.load(Ordering::SeqCst)

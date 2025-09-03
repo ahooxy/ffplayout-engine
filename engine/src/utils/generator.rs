@@ -8,9 +8,9 @@ use std::io::Error;
 
 use async_walkdir::WalkDir;
 use chrono::Timelike;
-use lexical_sort::{natural_lexical_cmp, StringSort};
+use lexical_sort::{StringSort, natural_lexical_cmp};
 use log::*;
-use rand::{rng, seq::SliceRandom, Rng};
+use rand::{Rng, rng, seq::SliceRandom};
 use tokio::fs;
 use tokio_stream::StreamExt;
 
@@ -18,7 +18,7 @@ use crate::player::{
     controller::ChannelManager,
     input::folder::FolderSource,
     utils::{
-        get_date_range, include_file_extension, json_serializer::JsonPlaylist, sum_durations, Media,
+        Media, get_date_range, include_file_extension, json_serializer::JsonPlaylist, sum_durations,
     },
 };
 use crate::utils::{
@@ -96,12 +96,7 @@ pub async fn filler_list(
     manager: &ChannelManager,
     total_length: f64,
 ) -> Vec<Media> {
-    let filler_list = manager
-        .storage
-        .lock()
-        .await
-        .fill_filler_list(config, None)
-        .await;
+    let filler_list = manager.storage.fill_filler_list(config, None).await;
     let mut index = 0;
     let mut filler_clip_list: Vec<Media> = vec![];
     let mut target_duration = 0.0;
@@ -145,10 +140,10 @@ pub async fn generate_from_template(
             + (source.duration.minute() as f64 * 60.0)
             + source.duration.second() as f64;
 
-        debug!(target: Target::all(), channel = id; "Generating playlist block with <yellow>{duration:.2}</> seconds length");
+        debug!(target: Target::all(), channel = id; "Generating playlist block with <span class=\"log-number\">{duration:.2}</span> seconds length");
 
         for path in source.paths {
-            debug!("Search files in <b><magenta>{path:?}</></b>");
+            debug!("Search files in <span class=\"log-addr\">{path:?}</span>");
             let mut file_list = vec![];
             let mut entries = WalkDir::new(path);
 
@@ -200,7 +195,7 @@ pub async fn generate_from_template(
 
 /// Generate playlists
 pub async fn playlist_generator(manager: &ChannelManager) -> Result<Vec<JsonPlaylist>, Error> {
-    let config = manager.config.lock().await.clone();
+    let config = manager.config.read().await.clone();
     let id = config.general.channel_id;
     let channel_name = manager.channel.lock().await.name.clone();
 
@@ -222,7 +217,7 @@ pub async fn playlist_generator(manager: &ChannelManager) -> Result<Vec<JsonPlay
     if !playlist_root.is_dir() {
         error!(
             target: Target::all(), channel = id;
-            "Playlist folder <b><magenta>{:?}</></b> not exists!",
+            "Playlist folder <span class=\"log-addr\">{:?}</span> not exists!",
             config.channel.playlists
         );
     }
@@ -260,7 +255,7 @@ pub async fn playlist_generator(manager: &ChannelManager) -> Result<Vec<JsonPlay
         if playlist_file.is_file() {
             warn!(
                 target: Target::all(), channel = id;
-                "Playlist exists, skip: <b><magenta>{}</></b>",
+                "Playlist exists, skip: <span class=\"log-addr\">{}</span>",
                 playlist_file.display()
             );
 
@@ -269,7 +264,7 @@ pub async fn playlist_generator(manager: &ChannelManager) -> Result<Vec<JsonPlay
 
         info!(
             target: Target::all(), channel = id;
-            "Generate playlist: <b><magenta>{}</></b>",
+            "Generate playlist: <span class=\"log-addr\">{}</span>",
             playlist_file.display()
         );
 

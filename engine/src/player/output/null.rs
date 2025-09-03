@@ -5,13 +5,13 @@ use tokio::process::{Child, Command};
 
 use crate::utils::{
     config::PlayoutConfig,
-    logging::{fmt_cmd, Target},
+    logging::{Target, fmt_cmd},
 };
 use crate::vec_strings;
 use crate::{
     player::{
         controller::ProcessUnit::*,
-        utils::{prepare_output_cmd, Media},
+        utils::{Media, prepare_output_cmd},
     },
     utils::errors::ServiceError,
 };
@@ -37,7 +37,7 @@ pub async fn output(config: &PlayoutConfig, log_format: &str) -> Result<Child, S
     let enc_cmd = prepare_output_cmd(config, enc_prefix, &media.filter);
 
     debug!(target: Target::file_mail(), channel = id;
-        "Encoder CMD: <bright-blue>ffmpeg {}</>",
+        "Encoder CMD: <span class=\"log-cmd\">ffmpeg {}</span>",
         fmt_cmd(&enc_cmd)
     );
 

@@ -4,6 +4,7 @@ use std::{
 };
 
 use chrono::{format::ParseErrorKind, prelude::*};
+use chrono_tz::Tz;
 use log::*;
 use path_clean::PathClean;
 use rand::Rng;
@@ -11,8 +12,8 @@ use regex::Regex;
 use tokio::{fs, net::TcpListener, process::Command};
 
 use serde::{
-    de::{self, Visitor},
     Deserialize, Deserializer, Serialize,
+    de::{self, Visitor},
 };
 
 pub mod advanced_config;
@@ -29,10 +30,13 @@ pub mod system;
 pub mod task_runner;
 pub mod time_machine;
 
+use crate::ARGS;
 use crate::db::GLOBAL_SETTINGS;
 use crate::player::utils::time_to_sec;
-use crate::utils::{errors::ServiceError, logging::log_file_path};
-use crate::ARGS;
+use crate::utils::{
+    errors::ServiceError,
+    logging::{log_file_path, remove_html, timestamps_to_timezone},
+};
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct TextFilter {
@@ -179,7 +183,12 @@ pub fn public_path() -> PathBuf {
     public_path
 }
 
-pub async fn read_log_file(channel_id: &i32, date: &str) -> Result<String, ServiceError> {
+pub async fn read_log_file(
+    channel_id: &i32,
+    date: &str,
+    timezone: Tz,
+    download: bool,
+) -> Result<String, ServiceError> {
     let date_str = if date.is_empty() {
         String::new()
     } else {
@@ -191,11 +200,21 @@ pub async fn read_log_file(channel_id: &i32, date: &str) -> Result<String, Servi
         .clean();
     let file_size = fs::metadata(&log_path).await?.len() as f64;
 
-    let log_content = if file_size > 5000000.0 {
-        error!("Log file to big: {}", sizeof_fmt(file_size));
-        format!("The log file is larger ({}) than the hard limit of 5MB, the probability is very high that something is wrong with the playout.\nCheck this on the server with `less {log_path:?}`.", sizeof_fmt(file_size))
+    let log_content = if download || file_size < 5000000.0 {
+        let content = fs::read_to_string(log_path).await?;
+        let content = timestamps_to_timezone(&content, timezone);
+
+        if download {
+            remove_html(&content)
+        } else {
+            content
+        }
     } else {
-        fs::read_to_string(log_path).await?
+        error!("Log file to big: {}", sizeof_fmt(file_size));
+        format!(
+            "The log file is larger ({}) than the hard limit of 5MB, the probability is very high that something is wrong with the playout.\nCheck this on the server with `less {log_path:?}`.",
+            sizeof_fmt(file_size)
+        )
     };
 
     Ok(log_content)
